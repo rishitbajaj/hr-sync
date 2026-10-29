@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: hr-sync
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/hrsync}
+    username: ${SPRING_DATASOURCE_USERNAME:hrsync}
+    password: ${SPRING_DATASOURCE_PASSWORD:hrsync}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+
+server:
+  port: 8080
