@@ -8,7 +8,6 @@ import com.moveinsync.hrsync.api.SyncBatchResponse;
 import com.moveinsync.hrsync.domain.BatchIngestor;
 import com.moveinsync.hrsync.domain.EmployeeFields;
 import com.moveinsync.hrsync.domain.EmployeeStatus;
-import com.moveinsync.hrsync.domain.EmployeeSyncStore;
 import com.moveinsync.hrsync.domain.EventType;
 import com.moveinsync.hrsync.domain.EventValidator;
 import com.moveinsync.hrsync.domain.HrEmployee;
@@ -16,20 +15,14 @@ import com.moveinsync.hrsync.domain.IngestResult;
 import com.moveinsync.hrsync.domain.OfficeDirectory;
 import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.ReasonCode;
-import com.moveinsync.hrsync.domain.RecordWork;
 import com.moveinsync.hrsync.domain.SyncEvent;
 import com.moveinsync.hrsync.service.SyncEventService;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
-import java.time.Clock;
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
-import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,7 +30,7 @@ class BatchIngestTest {
 
     @Test
     void batchOfTenAcceptsSevenAndRejectsThreeWithoutPersonalData() throws Exception {
-        MemoryStore store = new MemoryStore();
+        InMemoryChangeStore store = new InMemoryChangeStore();
         ListAppender<ILoggingEvent> logs = attachLogs();
         try {
             List<IngestResult> results = service(store).ingest(SampleHrBatch.domainEvents());
@@ -77,24 +70,15 @@ class BatchIngestTest {
     void storeFailureDoesNotAbortTheBatchOrLogPersonalData() {
         String leakedEmail = "hidden.person@leak.example";
         String leakedPhone = "+15559999999";
-        MemoryStore store = new MemoryStore();
-        EmployeeSyncStore failing = new EmployeeSyncStore() {
-            @Override
-            public Optional<HrEmployee> find(String tenantId, String employeeId) {
-                return store.find(tenantId, employeeId);
+        InMemoryChangeStore store = new InMemoryChangeStore();
+        store.failWhen(command -> {
+            if ("emp-bad".equals(command.employeeId())) {
+                throw new IllegalStateException("db rejected " + leakedEmail + " " + leakedPhone);
             }
-
-            @Override
-            public void save(HrEmployee employee) {
-                if ("emp-bad".equals(employee.employeeId())) {
-                    throw new IllegalStateException("db rejected " + leakedEmail + " " + leakedPhone);
-                }
-                store.save(employee);
-            }
-        };
+        });
         ListAppender<ILoggingEvent> logs = attachLogs();
         try {
-            List<IngestResult> results = service(failing).ingest(List.of(
+            List<IngestResult> results = service(store).ingest(List.of(
                     create("emp-bad", 1, leakedEmail, leakedPhone),
                     create("emp-ok", 2, "ok.person@leak.example", "+15550000022")
             ));
@@ -116,7 +100,7 @@ class BatchIngestTest {
     void malformedEmailIsRejectedAndDoesNotAppearInLogs() {
         String badEmail = "not-an-email";
         String home = "88 Hidden Home Road";
-        MemoryStore store = new MemoryStore();
+        InMemoryChangeStore store = new InMemoryChangeStore();
         ListAppender<ILoggingEvent> logs = attachLogs();
         try {
             List<IngestResult> results = service(store).ingest(List.of(
@@ -145,8 +129,8 @@ class BatchIngestTest {
 
     @Test
     void hrUpdateDoesNotOverwriteTransportFields() {
-        MemoryStore store = new MemoryStore();
-        store.save(HrEmployee.rehydrate(
+        InMemoryChangeStore store = new InMemoryChangeStore();
+        store.put(HrEmployee.rehydrate(
                 UUID.randomUUID(),
                 SampleHrBatch.TENANT,
                 "emp-01",
@@ -158,6 +142,7 @@ class BatchIngestTest {
                 "Gate 4",
                 "wheelchair",
                 1,
+                4,
                 EmployeeStatus.ACTIVE,
                 Instant.EPOCH
         ));
@@ -177,6 +162,7 @@ class BatchIngestTest {
         assertThat(stored.pickupPoint()).isEqualTo("Gate 4");
         assertThat(stored.specialAssistance()).isEqualTo("wheelchair");
         assertThat(stored.hrVersion()).isEqualTo(2);
+        assertThat(stored.transportVersion()).isEqualTo(4);
     }
 
     private static ReasonCode reason(List<IngestResult> results, String employeeId) {
@@ -197,25 +183,10 @@ class BatchIngestTest {
         );
     }
 
-    private static SyncEventService service(EmployeeSyncStore store) {
+    private static SyncEventService service(InMemoryChangeStore store) {
         OfficeDirectory offices = (tenantId, officeCode) ->
                 SampleHrBatch.TENANT.equals(tenantId) && SampleHrBatch.OFFICE.equals(officeCode);
-        return new SyncEventService(new BatchIngestor(
-                new EventValidator(),
-                offices,
-                store,
-                Clock.systemUTC(),
-                immediate()
-        ));
-    }
-
-    private static RecordWork immediate() {
-        return new RecordWork() {
-            @Override
-            public <T> T call(Supplier<T> work) {
-                return work.get();
-            }
-        };
+        return new SyncEventService(new BatchIngestor(new EventValidator(), offices, store));
     }
 
     private static void assertCapturedLogsOmitSensitiveValues(ListAppender<ILoggingEvent> logs, int ingestLines) {
@@ -242,24 +213,5 @@ class BatchIngestTest {
     private static void detach(ListAppender<ILoggingEvent> appender) {
         Logger root = (Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
         root.detachAppender(appender);
-    }
-
-    private static final class MemoryStore implements EmployeeSyncStore {
-
-        private final Map<String, HrEmployee> rows = new HashMap<>();
-
-        @Override
-        public Optional<HrEmployee> find(String tenantId, String employeeId) {
-            return Optional.ofNullable(rows.get(key(tenantId, employeeId)));
-        }
-
-        @Override
-        public void save(HrEmployee employee) {
-            rows.put(key(employee.tenantId(), employee.employeeId()), employee);
-        }
-
-        private static String key(String tenantId, String employeeId) {
-            return tenantId + "\0" + employeeId;
-        }
     }
 }

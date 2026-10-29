@@ -49,6 +49,9 @@ public class EmployeeEntity {
     @Column(name = "hr_version", nullable = false)
     private long hrVersion;
 
+    @Column(name = "transport_version", nullable = false)
+    private long transportVersion;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     private EmployeeStatus status;
@@ -73,6 +76,7 @@ public class EmployeeEntity {
         pickupPoint = employee.pickupPoint();
         specialAssistance = employee.specialAssistance();
         hrVersion = employee.hrVersion();
+        transportVersion = employee.transportVersion();
         status = employee.status();
         updatedAt = employee.updatedAt();
     }
@@ -90,6 +94,7 @@ public class EmployeeEntity {
                 pickupPoint,
                 specialAssistance,
                 hrVersion,
+                transportVersion,
                 status,
                 updatedAt
         );
@@ -113,5 +118,17 @@ public class EmployeeEntity {
 
     public long getHrVersion() {
         return hrVersion;
+    }
+
+    public long getTransportVersion() {
+        return transportVersion;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public String getSpecialAssistance() {
+        return specialAssistance;
     }
 }

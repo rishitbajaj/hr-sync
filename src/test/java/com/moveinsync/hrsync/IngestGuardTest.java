@@ -9,11 +9,8 @@ import com.moveinsync.hrsync.api.SyncEventRequest;
 import com.moveinsync.hrsync.api.SyncFieldsRequest;
 import com.moveinsync.hrsync.config.IngestLimits;
 import com.moveinsync.hrsync.domain.BatchIngestor;
-import com.moveinsync.hrsync.domain.EmployeeSyncStore;
 import com.moveinsync.hrsync.domain.EventValidator;
-import com.moveinsync.hrsync.domain.HrEmployee;
 import com.moveinsync.hrsync.domain.OfficeDirectory;
-import com.moveinsync.hrsync.domain.RecordWork;
 import com.moveinsync.hrsync.service.SyncEventService;
 import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.Test;
@@ -24,12 +21,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -45,7 +37,7 @@ class IngestGuardTest {
 
     @Test
     void batchLargerThanTheCapIsRejectedBeforeAnyRecordIsApplied() throws Exception {
-        MemoryStore store = new MemoryStore();
+        InMemoryChangeStore store = new InMemoryChangeStore();
         IngestLimits limits = limits(2, 100_000);
         String body = new ObjectMapper().writeValueAsString(new SyncBatchRequest(List.of(
                 event("e1", SECRET_EMAIL, SECRET_PHONE),
@@ -69,7 +61,7 @@ class IngestGuardTest {
 
     @Test
     void bodyLargerThanTheCapIsRejected() throws Exception {
-        MemoryStore store = new MemoryStore();
+        InMemoryChangeStore store = new InMemoryChangeStore();
         IngestLimits limits = limits(100, 64);
         String token = "SECRET-BODY-TOKEN";
         String body = token.repeat(8);
@@ -117,21 +109,9 @@ class IngestGuardTest {
                 .contains("REQUEST_TOO_LARGE");
     }
 
-    private static MockMvc mvc(MemoryStore store, IngestLimits limits) {
+    private static MockMvc mvc(InMemoryChangeStore store, IngestLimits limits) {
         OfficeDirectory offices = (tenantId, officeCode) -> SampleHrBatch.OFFICE.equals(officeCode);
-        RecordWork immediate = new RecordWork() {
-            @Override
-            public <T> T call(Supplier<T> work) {
-                return work.get();
-            }
-        };
-        SyncEventService service = new SyncEventService(new BatchIngestor(
-                new EventValidator(),
-                offices,
-                store,
-                Clock.systemUTC(),
-                immediate
-        ));
+        SyncEventService service = new SyncEventService(new BatchIngestor(new EventValidator(), offices, store));
         return MockMvcBuilders.standaloneSetup(new SyncEventController(service, limits))
                 .setControllerAdvice(new IngestExceptionHandler())
                 .addFilters(new IngestBodySizeFilter(limits))
@@ -155,18 +135,4 @@ class IngestGuardTest {
         );
     }
 
-    private static final class MemoryStore implements EmployeeSyncStore {
-
-        private final Map<String, HrEmployee> rows = new HashMap<>();
-
-        @Override
-        public Optional<HrEmployee> find(String tenantId, String employeeId) {
-            return Optional.ofNullable(rows.get(tenantId + "\0" + employeeId));
-        }
-
-        @Override
-        public void save(HrEmployee employee) {
-            rows.put(employee.tenantId() + "\0" + employee.employeeId(), employee);
-        }
-    }
 }

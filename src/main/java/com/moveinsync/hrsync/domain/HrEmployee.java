@@ -16,6 +16,7 @@ public final class HrEmployee {
     private String pickupPoint;
     private String specialAssistance;
     private long hrVersion;
+    private long transportVersion;
     private EmployeeStatus status;
     private Instant updatedAt;
 
@@ -33,6 +34,7 @@ public final class HrEmployee {
         employee.manager = fields.manager();
         employee.officeCode = fields.officeCode();
         employee.hrVersion = event.sourceVersion();
+        employee.transportVersion = 0;
         employee.status = EmployeeStatus.ACTIVE;
         employee.updatedAt = now;
         return employee;
@@ -50,6 +52,7 @@ public final class HrEmployee {
             String pickupPoint,
             String specialAssistance,
             long hrVersion,
+            long transportVersion,
             EmployeeStatus status,
             Instant updatedAt
     ) {
@@ -63,6 +66,7 @@ public final class HrEmployee {
         employee.pickupPoint = pickupPoint;
         employee.specialAssistance = specialAssistance;
         employee.hrVersion = hrVersion;
+        employee.transportVersion = transportVersion;
         employee.status = status;
         employee.updatedAt = updatedAt;
         return employee;
@@ -137,6 +141,14 @@ public final class HrEmployee {
 
     public long hrVersion() {
         return hrVersion;
+    }
+
+    public long transportVersion() {
+        return transportVersion;
+    }
+
+    public long version(FieldChannel channel) {
+        return channel == FieldChannel.HR ? hrVersion : transportVersion;
     }
 
     public EmployeeStatus status() {

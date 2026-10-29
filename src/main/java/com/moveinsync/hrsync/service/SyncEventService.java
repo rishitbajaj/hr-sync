@@ -1,6 +1,7 @@
 package com.moveinsync.hrsync.service;
 
 import com.moveinsync.hrsync.domain.BatchIngestor;
+import com.moveinsync.hrsync.domain.FieldChannel;
 import com.moveinsync.hrsync.domain.IngestResult;
 import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.SyncEvent;
@@ -22,7 +23,11 @@ public class SyncEventService {
     }
 
     public List<IngestResult> ingest(List<SyncEvent> events) {
-        List<IngestResult> results = ingestor.ingest(events);
+        return ingest(events, FieldChannel.HR);
+    }
+
+    public List<IngestResult> ingest(List<SyncEvent> events, FieldChannel channel) {
+        List<IngestResult> results = ingestor.ingest(events, channel);
         results.forEach(this::logResult);
         return results;
     }
@@ -34,6 +39,16 @@ public class SyncEventService {
                     result.tenantId(),
                     result.employeeId(),
                     result.sourceVersion()
+            );
+            return;
+        }
+        if (result.outcome() == Outcome.IGNORED) {
+            log.info(
+                    "ignored tenantId={} employeeId={} sourceVersion={} reason={}",
+                    result.tenantId(),
+                    result.employeeId(),
+                    result.sourceVersion(),
+                    result.reasonCode()
             );
             return;
         }

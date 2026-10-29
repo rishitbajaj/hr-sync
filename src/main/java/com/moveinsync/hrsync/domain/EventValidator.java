@@ -9,7 +9,14 @@ public final class EventValidator {
     static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
     static final int MAX_EMAIL_LENGTH = 320;
 
-    public Optional<ReasonCode> validate(SyncEvent event, OfficeDirectory offices) {
+    public Optional<ReasonCode> validate(SyncEvent event, OfficeDirectory offices, FieldChannel channel) {
+        if (channel == FieldChannel.TRANSPORT) {
+            return validateTransport(event);
+        }
+        return validateHr(event, offices);
+    }
+
+    private Optional<ReasonCode> validateHr(SyncEvent event, OfficeDirectory offices) {
         if (event == null
                 || event.tenantId() == null
                 || event.employeeId() == null
@@ -24,6 +31,22 @@ public final class EventValidator {
             case UPDATE -> validateUpdate(event, fields, offices);
             case DEACTIVATE -> validatePresentContact(event, fields, offices);
         };
+    }
+
+    private Optional<ReasonCode> validateTransport(SyncEvent event) {
+        if (event == null
+                || event.tenantId() == null
+                || event.employeeId() == null
+                || event.sourceVersion() == null
+                || event.sourceVersion() < 1
+                || event.type() != EventType.UPDATE) {
+            return Optional.of(ReasonCode.MISSING_REQUIRED_FIELD);
+        }
+        EmployeeFields fields = event.fieldsOrEmpty();
+        if (fields.pickupPoint() == null && fields.specialAssistance() == null) {
+            return Optional.of(ReasonCode.MISSING_REQUIRED_FIELD);
+        }
+        return Optional.empty();
     }
 
     private Optional<ReasonCode> validateCreate(SyncEvent event, EmployeeFields fields, OfficeDirectory offices) {

@@ -1,8 +1,7 @@
 package com.moveinsync.hrsync.domain;
 
-import java.time.Clock;
-import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -10,78 +9,46 @@ public final class BatchIngestor {
 
     private final EventValidator validator;
     private final OfficeDirectory offices;
-    private final EmployeeSyncStore employees;
-    private final Clock clock;
-    private final RecordWork recordWork;
+    private final ChangeStore changes;
 
-    public BatchIngestor(
-            EventValidator validator,
-            OfficeDirectory offices,
-            EmployeeSyncStore employees,
-            Clock clock,
-            RecordWork recordWork
-    ) {
+    public BatchIngestor(EventValidator validator, OfficeDirectory offices, ChangeStore changes) {
         this.validator = validator;
         this.offices = offices;
-        this.employees = employees;
-        this.clock = clock;
-        this.recordWork = recordWork;
+        this.changes = changes;
     }
 
-    public List<IngestResult> ingest(List<SyncEvent> events) {
+    public List<IngestResult> ingest(List<SyncEvent> events, FieldChannel channel) {
         if (events == null || events.isEmpty()) {
             return List.of();
         }
-        List<IngestResult> results = new ArrayList<>(events.size());
-        for (SyncEvent event : events) {
-            results.add(ingestOne(event));
+        IngestResult[] results = new IngestResult[events.size()];
+        List<IndexedEvent> ready = new ArrayList<>();
+        for (int index = 0; index < events.size(); index++) {
+            SyncEvent event = events.get(index);
+            Optional<ReasonCode> problem = validator.validate(event, offices, channel);
+            if (problem.isPresent()) {
+                results[index] = rejected(event, problem.get());
+            } else {
+                ready.add(new IndexedEvent(index, event));
+            }
         }
-        return List.copyOf(results);
+        ready.sort(Comparator
+                .comparing((IndexedEvent item) -> item.event().tenantId())
+                .thenComparing(item -> item.event().employeeId())
+                .thenComparingLong(item -> item.event().sourceVersion())
+                .thenComparingInt(IndexedEvent::index));
+        for (IndexedEvent item : ready) {
+            results[item.index()] = apply(item.event(), channel);
+        }
+        return List.of(results);
     }
 
-    private IngestResult ingestOne(SyncEvent event) {
+    private IngestResult apply(SyncEvent event, FieldChannel channel) {
         try {
-            if (event == null) {
-                return IngestResult.rejected(null, null, null, ReasonCode.MISSING_REQUIRED_FIELD);
-            }
-            Optional<ReasonCode> problem = validator.validate(event, offices);
-            if (problem.isPresent()) {
-                return rejected(event, problem.get());
-            }
-            return recordWork.call(() -> apply(event));
+            return changes.apply(ChangeCommand.from(event, channel));
         } catch (Exception ex) {
             return rejected(event, ReasonCode.APPLY_FAILED);
         }
-    }
-
-    private IngestResult apply(SyncEvent event) {
-        Instant now = clock.instant();
-        Optional<HrEmployee> existing = employees.find(event.tenantId(), event.employeeId());
-        switch (event.type()) {
-            case CREATE -> {
-                if (existing.isPresent()) {
-                    return rejected(event, ReasonCode.ALREADY_EXISTS);
-                }
-                employees.save(HrEmployee.createFrom(event, now));
-            }
-            case UPDATE -> {
-                if (existing.isEmpty()) {
-                    return rejected(event, ReasonCode.EMPLOYEE_NOT_FOUND);
-                }
-                HrEmployee employee = existing.get();
-                employee.applyHrUpdate(event, now);
-                employees.save(employee);
-            }
-            case DEACTIVATE -> {
-                if (existing.isEmpty()) {
-                    return rejected(event, ReasonCode.EMPLOYEE_NOT_FOUND);
-                }
-                HrEmployee employee = existing.get();
-                employee.deactivate(event.sourceVersion(), now);
-                employees.save(employee);
-            }
-        }
-        return IngestResult.applied(event.tenantId(), event.employeeId(), event.sourceVersion());
     }
 
     private static IngestResult rejected(SyncEvent event, ReasonCode reasonCode) {
@@ -89,5 +56,8 @@ public final class BatchIngestor {
             return IngestResult.rejected(null, null, null, reasonCode);
         }
         return IngestResult.rejected(event.tenantId(), event.employeeId(), event.sourceVersion(), reasonCode);
+    }
+
+    private record IndexedEvent(int index, SyncEvent event) {
     }
 }

@@ -66,7 +66,7 @@ public class IngestBodySizeFilter extends OncePerRequestFilter {
         if (path == null || path.isEmpty()) {
             path = request.getRequestURI();
         }
-        return "/sync/events".equals(path);
+        return "/sync/events".equals(path) || "/sync/transport-events".equals(path);
     }
 
     private static boolean causedByBodyLimit(Throwable throwable) {

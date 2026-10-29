@@ -14,4 +14,8 @@ public record IngestResult(
     public static IngestResult rejected(String tenantId, String employeeId, Long sourceVersion, ReasonCode reasonCode) {
         return new IngestResult(tenantId, employeeId, sourceVersion, Outcome.REJECTED, reasonCode);
     }
+
+    public static IngestResult ignored(String tenantId, String employeeId, Long sourceVersion, ReasonCode reasonCode) {
+        return new IngestResult(tenantId, employeeId, sourceVersion, Outcome.IGNORED, reasonCode);
+    }
 }
