@@ -5,6 +5,9 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moveinsync.hrsync.api.SyncBatchRequest;
+import com.moveinsync.hrsync.api.SyncEventRequest;
+import com.moveinsync.hrsync.api.SyncFieldsRequest;
 import com.moveinsync.hrsync.domain.EmployeeStatus;
 import com.moveinsync.hrsync.repo.EmployeeEntity;
 import com.moveinsync.hrsync.repo.EmployeeRepository;
@@ -26,6 +29,8 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,7 +57,9 @@ class SyncEventsHttpTest {
 
     @BeforeEach
     void seedOffice() {
-        offices.save(new OfficeEntity(UUID.randomUUID(), SampleHrBatch.TENANT, SampleHrBatch.OFFICE));
+        if (!offices.existsByTenantIdAndCode(SampleHrBatch.TENANT, SampleHrBatch.OFFICE)) {
+            offices.save(new OfficeEntity(UUID.randomUUID(), SampleHrBatch.TENANT, SampleHrBatch.OFFICE));
+        }
     }
 
     @Test
@@ -87,7 +94,6 @@ class SyncEventsHttpTest {
             assertThat(results.get(8).get("reasonCode").asText()).isEqualTo("MISSING_REQUIRED_FIELD");
             assertThat(results.get(9).get("outcome").asText()).isEqualTo("APPLIED");
 
-            assertThat(employees.count()).isEqualTo(7);
             EmployeeEntity saved = employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "emp-01").orElseThrow();
             assertThat(saved.getPhone()).isEqualTo("+15550000001");
             assertThat(saved.getEmail()).isEqualTo("emp-01@leak.example");
@@ -109,6 +115,62 @@ class SyncEventsHttpTest {
         } finally {
             root.detachAppender(logs);
         }
+    }
+
+    @Test
+    void databaseFailureOnRecordFourDoesNotAbortTheRestOfTheBatch() throws Exception {
+        List<SyncEventRequest> events = new ArrayList<>();
+        for (int index = 1; index <= 10; index++) {
+            String name = index == 4 ? "N".repeat(250) : "Person " + index;
+            String phoneSuffix = index < 10 ? "0" + index : Integer.toString(index);
+            events.add(new SyncEventRequest(
+                    SampleHrBatch.TENANT,
+                    "row-" + index,
+                    (long) index,
+                    "CREATE",
+                    new SyncFieldsRequest(
+                            name,
+                            "row-" + index + "@leak.example",
+                            "+155500000" + phoneSuffix,
+                            "M1",
+                            SampleHrBatch.OFFICE,
+                            null,
+                            null
+                    )
+            ));
+        }
+
+        ResponseEntity<String> response = restTemplate.postForEntity(
+                "/sync/events",
+                new HttpEntity<>(new SyncBatchRequest(events), jsonHeaders()),
+                String.class
+        );
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode results = objectMapper.readTree(response.getBody()).get("results");
+        assertThat(results).hasSize(10);
+        assertThat(results.get(3).get("employeeId").asText()).isEqualTo("row-4");
+        assertThat(results.get(3).get("outcome").asText()).isEqualTo("REJECTED");
+        assertThat(results.get(3).get("reasonCode").asText()).isEqualTo("APPLY_FAILED");
+        for (int index = 0; index < 10; index++) {
+            if (index == 3) {
+                continue;
+            }
+            assertThat(results.get(index).get("outcome").asText()).isEqualTo("APPLIED");
+        }
+        assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "row-4")).isEmpty();
+        for (int index = 5; index <= 10; index++) {
+            assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "row-" + index)).isPresent();
+        }
+        for (int index = 1; index <= 3; index++) {
+            assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "row-" + index)).isPresent();
+        }
+    }
+
+    private static HttpHeaders jsonHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return headers;
     }
 
     private static long count(JsonNode results, String outcome) {

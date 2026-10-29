@@ -26,3 +26,8 @@ logging:
   level:
     org.hibernate.SQL: warn
     org.hibernate.orm.jdbc.bind: warn
+
+hr-sync:
+  ingest:
+    max-batch-size: 1000
+    max-body-bytes: 1048576

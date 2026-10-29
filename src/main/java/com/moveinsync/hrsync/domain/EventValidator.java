@@ -6,6 +6,8 @@ import java.util.regex.Pattern;
 public final class EventValidator {
 
     static final Pattern E164 = Pattern.compile("\\+[1-9]\\d{7,14}");
+    static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
+    static final int MAX_EMAIL_LENGTH = 320;
 
     public Optional<ReasonCode> validate(SyncEvent event, OfficeDirectory offices) {
         if (event == null
@@ -46,9 +48,16 @@ public final class EventValidator {
         if (fields.phone() != null && !E164.matcher(fields.phone()).matches()) {
             return Optional.of(ReasonCode.INVALID_PHONE);
         }
+        if (fields.email() != null && !validEmail(fields.email())) {
+            return Optional.of(ReasonCode.INVALID_EMAIL);
+        }
         if (fields.officeCode() != null && !offices.exists(event.tenantId(), fields.officeCode())) {
             return Optional.of(ReasonCode.UNKNOWN_OFFICE);
         }
         return Optional.empty();
+    }
+
+    private static boolean validEmail(String email) {
+        return email.length() <= MAX_EMAIL_LENGTH && EMAIL.matcher(email).matches();
     }
 }

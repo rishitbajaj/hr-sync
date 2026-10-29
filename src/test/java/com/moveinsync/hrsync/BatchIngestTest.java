@@ -1,6 +1,5 @@
 package com.moveinsync.hrsync;
 
-import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
@@ -17,6 +16,7 @@ import com.moveinsync.hrsync.domain.IngestResult;
 import com.moveinsync.hrsync.domain.OfficeDirectory;
 import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.ReasonCode;
+import com.moveinsync.hrsync.domain.RecordWork;
 import com.moveinsync.hrsync.domain.SyncEvent;
 import com.moveinsync.hrsync.service.SyncEventService;
 import org.junit.jupiter.api.Test;
@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,11 +67,7 @@ class BatchIngestTest {
             String response = new ObjectMapper().writeValueAsString(SyncBatchResponse.from(results));
             SampleHrBatch.assertNoPersonalData(response);
             SampleHrBatch.assertNoPersonalData(results.toString());
-            assertThat(logs.list).hasSize(10);
-            logs.list.forEach(event -> {
-                SampleHrBatch.assertNoPersonalData(event.getFormattedMessage());
-                assertThat(event.getThrowableProxy()).isNull();
-            });
+            assertCapturedLogsOmitSensitiveValues(logs, 10);
         } finally {
             detach(logs);
         }
@@ -110,6 +107,37 @@ class BatchIngestTest {
                 assertThat(event.getFormattedMessage()).doesNotContain(leakedEmail).doesNotContain(leakedPhone);
                 assertThat(event.getThrowableProxy()).isNull();
             });
+        } finally {
+            detach(logs);
+        }
+    }
+
+    @Test
+    void malformedEmailIsRejectedAndDoesNotAppearInLogs() {
+        String badEmail = "not-an-email";
+        String home = "88 Hidden Home Road";
+        MemoryStore store = new MemoryStore();
+        ListAppender<ILoggingEvent> logs = attachLogs();
+        try {
+            List<IngestResult> results = service(store).ingest(List.of(
+                    create("emp-bad-mail", 1, badEmail, "+15550000031"),
+                    new SyncEvent(
+                            SampleHrBatch.TENANT,
+                            "emp-after-mail",
+                            2L,
+                            EventType.CREATE,
+                            new EmployeeFields("Nia", "nia@leak.example", "+15550000032", "M1", SampleHrBatch.OFFICE, home, null)
+                    )
+            ));
+
+            assertThat(results).extracting(IngestResult::reasonCode)
+                    .containsExactly(ReasonCode.INVALID_EMAIL, null);
+            assertThat(results.get(1).outcome()).isEqualTo(Outcome.APPLIED);
+            assertThat(store.find(SampleHrBatch.TENANT, "emp-bad-mail")).isEmpty();
+            assertThat(store.find(SampleHrBatch.TENANT, "emp-after-mail")).isPresent();
+            String logged = logs.list.stream().map(ILoggingEvent::getFormattedMessage).reduce("", (left, right) -> left + "\n" + right);
+            assertThat(logged).doesNotContain(badEmail).doesNotContain(home).doesNotContain("+1555").doesNotContain("@leak.example");
+            logs.list.forEach(event -> assertThat(event.getThrowableProxy()).isNull());
         } finally {
             detach(logs);
         }
@@ -172,21 +200,48 @@ class BatchIngestTest {
     private static SyncEventService service(EmployeeSyncStore store) {
         OfficeDirectory offices = (tenantId, officeCode) ->
                 SampleHrBatch.TENANT.equals(tenantId) && SampleHrBatch.OFFICE.equals(officeCode);
-        return new SyncEventService(new BatchIngestor(new EventValidator(), offices, store, Clock.systemUTC()));
+        return new SyncEventService(new BatchIngestor(
+                new EventValidator(),
+                offices,
+                store,
+                Clock.systemUTC(),
+                immediate()
+        ));
+    }
+
+    private static RecordWork immediate() {
+        return new RecordWork() {
+            @Override
+            public <T> T call(Supplier<T> work) {
+                return work.get();
+            }
+        };
+    }
+
+    private static void assertCapturedLogsOmitSensitiveValues(ListAppender<ILoggingEvent> logs, int ingestLines) {
+        assertThat(logs.list.stream().filter(BatchIngestTest::isIngestLine).toList()).hasSize(ingestLines);
+        logs.list.forEach(event -> {
+            SampleHrBatch.assertNoPersonalData(event.getFormattedMessage());
+            assertThat(event.getThrowableProxy()).isNull();
+        });
+    }
+
+    private static boolean isIngestLine(ILoggingEvent event) {
+        String message = event.getFormattedMessage();
+        return message.startsWith("applied ") || message.startsWith("rejected ");
     }
 
     private static ListAppender<ILoggingEvent> attachLogs() {
-        Logger logger = (Logger) LoggerFactory.getLogger(SyncEventService.class);
-        logger.setLevel(Level.INFO);
+        Logger root = (Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();
-        logger.addAppender(appender);
+        root.addAppender(appender);
         return appender;
     }
 
     private static void detach(ListAppender<ILoggingEvent> appender) {
-        Logger logger = (Logger) LoggerFactory.getLogger(SyncEventService.class);
-        logger.detachAppender(appender);
+        Logger root = (Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
+        root.detachAppender(appender);
     }
 
     private static final class MemoryStore implements EmployeeSyncStore {

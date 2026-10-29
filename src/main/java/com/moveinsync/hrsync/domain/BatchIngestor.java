@@ -12,12 +12,20 @@ public final class BatchIngestor {
     private final OfficeDirectory offices;
     private final EmployeeSyncStore employees;
     private final Clock clock;
+    private final RecordWork recordWork;
 
-    public BatchIngestor(EventValidator validator, OfficeDirectory offices, EmployeeSyncStore employees, Clock clock) {
+    public BatchIngestor(
+            EventValidator validator,
+            OfficeDirectory offices,
+            EmployeeSyncStore employees,
+            Clock clock,
+            RecordWork recordWork
+    ) {
         this.validator = validator;
         this.offices = offices;
         this.employees = employees;
         this.clock = clock;
+        this.recordWork = recordWork;
     }
 
     public List<IngestResult> ingest(List<SyncEvent> events) {
@@ -40,7 +48,7 @@ public final class BatchIngestor {
             if (problem.isPresent()) {
                 return rejected(event, problem.get());
             }
-            return apply(event);
+            return recordWork.call(() -> apply(event));
         } catch (Exception ex) {
             return rejected(event, ReasonCode.APPLY_FAILED);
         }

@@ -20,6 +20,7 @@ final class SampleHrBatch {
     static final String PHONE_PREFIX = "+1555";
     static final String BAD_PHONE = "not-a-phone";
     static final String HOME = "12 Secret Home Lane";
+    static final String NAME_MARKER = "SecretLegalName";
 
     private SampleHrBatch() {
     }
@@ -69,12 +70,13 @@ final class SampleHrBatch {
                 .doesNotContain(EMAIL_MARKER)
                 .doesNotContain(BAD_PHONE)
                 .doesNotContain(PHONE_PREFIX)
-                .doesNotContain(HOME);
+                .doesNotContain(HOME)
+                .doesNotContain(NAME_MARKER);
     }
 
     private static List<Row> rows() {
         return List.of(
-                new Row("emp-01", 1, "Ada", "emp-01@leak.example", "+15550000001", OFFICE, HOME),
+                new Row("emp-01", 1, NAME_MARKER, "emp-01@leak.example", "+15550000001", OFFICE, HOME),
                 new Row("emp-02", 2, "Bea", "emp-02@leak.example", BAD_PHONE, OFFICE, null),
                 new Row("emp-03", 3, "Cid", "emp-03@leak.example", "+15550000003", OFFICE, null),
                 new Row("emp-04", 4, "Dee", "emp-04@leak.example", "+15550000004", OFFICE, null),
