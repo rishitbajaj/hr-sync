@@ -6,10 +6,12 @@ import com.moveinsync.hrsync.api.SyncBatchRequest;
 import com.moveinsync.hrsync.api.SyncEventRequest;
 import com.moveinsync.hrsync.api.SyncFieldsRequest;
 import com.moveinsync.hrsync.domain.EmployeeFields;
+import com.moveinsync.hrsync.domain.EmployeeStatus;
 import com.moveinsync.hrsync.domain.EventType;
 import com.moveinsync.hrsync.domain.IngestResult;
 import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.SyncEvent;
+import com.moveinsync.hrsync.repo.EmployeeRepository;
 import com.moveinsync.hrsync.repo.OfficeEntity;
 import com.moveinsync.hrsync.repo.OfficeRepository;
 import com.moveinsync.hrsync.service.SyncEventService;
@@ -56,6 +58,9 @@ class OrderingScenariosTest {
 
     @Autowired
     private OfficeRepository offices;
+
+    @Autowired
+    private EmployeeRepository employees;
 
     @Autowired
     private SyncEventService syncEvents;
@@ -173,6 +178,7 @@ class OrderingScenariosTest {
 
     @Test
     void updateOrDeactivateBeforeCreateRecordsAVersionTombstone() throws Exception {
+        long activeBefore = employees.countByTenantIdAndStatus(SampleHrBatch.TENANT, EmployeeStatus.ACTIVE);
         post("/sync/events", hr("emp-tomb-u", 5, "UPDATE", "Later", SampleHrBatch.OFFICE));
         JsonNode earlyCreate = post("/sync/events", hr("emp-tomb-u", 3, "CREATE", "Early", SampleHrBatch.OFFICE));
 
@@ -180,7 +186,18 @@ class OrderingScenariosTest {
         StoredEmployee updated = stored("emp-tomb-u");
         assertThat(updated.hrVersion()).isEqualTo(5);
         assertThat(updated.name()).isEqualTo("Later");
-        assertThat(updated.status()).isEqualTo("ACTIVE");
+        assertThat(updated.status()).isEqualTo("PLACEHOLDER");
+        assertThat(employees.findVisibleByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "emp-tomb-u")).isEmpty();
+        assertThat(employees.countByTenantIdAndStatus(SampleHrBatch.TENANT, EmployeeStatus.ACTIVE)).isEqualTo(activeBefore);
+
+        JsonNode realCreate = post("/sync/events", hr("emp-tomb-u", 8, "CREATE", "Real", SampleHrBatch.OFFICE));
+        assertThat(realCreate.get(0).get("outcome").asText()).isEqualTo("APPLIED");
+        StoredEmployee created = stored("emp-tomb-u");
+        assertThat(created.status()).isEqualTo("ACTIVE");
+        assertThat(created.name()).isEqualTo("Real");
+        assertThat(created.hrVersion()).isEqualTo(8);
+        assertThat(employees.findVisibleByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "emp-tomb-u")).isPresent();
+        assertThat(employees.countByTenantIdAndStatus(SampleHrBatch.TENANT, EmployeeStatus.ACTIVE)).isEqualTo(activeBefore + 1);
 
         post("/sync/events", new SyncEventRequest(SampleHrBatch.TENANT, "emp-tomb-d", 4L, "DEACTIVATE", null));
         JsonNode earlyAfterDeactivate = post("/sync/events", hr("emp-tomb-d", 2, "CREATE", "Early", SampleHrBatch.OFFICE));

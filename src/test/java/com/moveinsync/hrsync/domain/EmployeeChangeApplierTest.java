@@ -76,7 +76,7 @@ class EmployeeChangeApplierTest {
 
         assertThat(tombstone.hrVersion()).isEqualTo(5);
         assertThat(tombstone.name()).isEqualTo("Later");
-        assertThat(tombstone.status()).isEqualTo(EmployeeStatus.ACTIVE);
+        assertThat(tombstone.status()).isEqualTo(EmployeeStatus.PLACEHOLDER);
         assertThat(applier.decide(tombstone, false, hrCreate(3, "Early")).reason())
                 .isEqualTo(ReasonCode.STALE_IGNORED);
 
@@ -101,6 +101,24 @@ class EmployeeChangeApplierTest {
         assertThat(created.status()).isEqualTo(EmployeeStatus.ACTIVE);
         assertThat(created.name()).isEqualTo("Joined");
         assertThat(created.hrVersion()).isEqualTo(5);
+    }
+
+    @Test
+    void transportFirstSightingStaysHiddenUntilAnHrCreate() {
+        HrEmployee placeholder = applier.decide(null, false, new ChangeCommand(
+                "acme", "e1", 1, EventType.UPDATE, FieldChannel.TRANSPORT,
+                new EmployeeFields(null, null, null, null, null, "Gate 4", "wheelchair")
+        )).state();
+
+        assertThat(placeholder.status()).isEqualTo(EmployeeStatus.PLACEHOLDER);
+        assertThat(placeholder.hrVersion()).isZero();
+        assertThat(placeholder.pickupPoint()).isEqualTo("Gate 4");
+
+        HrEmployee created = applier.decide(placeholder, false, hrCreate(1, "Ada")).state();
+        assertThat(created.status()).isEqualTo(EmployeeStatus.ACTIVE);
+        assertThat(created.name()).isEqualTo("Ada");
+        assertThat(created.pickupPoint()).isEqualTo("Gate 4");
+        assertThat(created.specialAssistance()).isEqualTo("wheelchair");
     }
 
     private static ChangeCommand hrUpdate(long version, String name) {

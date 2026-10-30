@@ -38,11 +38,13 @@ An HR payload that also contains a pickup point or special-assistance value does
 
 An update or deactivate for an employee that has no row yet still records the version. The service inserts a placeholder row so a later create with a lower version is `STALE_IGNORED` instead of being applied late.
 
-- An HR update inserts the HR fields from that event, status `ACTIVE`, `hr_version` set to the event version, and `transport_version` 0. Transport columns stay null.
-- An HR deactivate inserts status `DEACTIVATED`, `hr_version` set to the event version, and null HR and transport fields. Deactivate does not copy HR fields onto the placeholder.
-- A transport-admin change inserts the transport fields, `transport_version` set to the event version, `hr_version` 0, and status `ACTIVE`.
+- An HR update inserts the HR fields from that event, status `PLACEHOLDER`, `hr_version` set to the event version, and `transport_version` 0. Transport columns stay null. A later HR update keeps `PLACEHOLDER` until a create.
+- An HR deactivate inserts status `DEACTIVATED`, `hr_version` set to the event version, and null HR and transport fields. Deactivate does not copy HR fields onto the row.
+- A transport-admin change for an unknown employee inserts the transport fields, `transport_version` set to the event version, `hr_version` 0, and status `PLACEHOLDER`.
 
-A later create whose version is less than or equal to the stored `hr_version` is `STALE_IGNORED`. A later create with a higher version applies the HR fields and sets status `ACTIVE`, including when the placeholder was deactivated. There is no separate placeholder status: `employee.status` stays `ACTIVE` or `DEACTIVATED`.
+`PLACEHOLDER` is not an active employee. Active counts use `status = 'ACTIVE'` (the partial index `idx_employee_tenant_active` already does). A normal read, `findVisibleByTenantIdAndEmployeeId`, does not return a `PLACEHOLDER`. The apply path still loads the row so a later event can see its version.
+
+A later create whose version is less than or equal to the stored `hr_version` is `STALE_IGNORED`. The first create with a higher version applies the HR fields and sets status `ACTIVE`, including when the row was `PLACEHOLDER` or `DEACTIVATED`. Transport fields already stored on a placeholder are kept.
 
 ## Ordering inside one batch
 
@@ -54,7 +56,7 @@ Office transfer version 7 arrives, then an earlier HR change version 6. There is
 
 The same feed is posted again. Every second-pass result is `DUPLICATE` or `STALE_IGNORED`. Names, contact fields, office, pickup point, assistance, both versions, status, and `updated_at` stay as they were.
 
-Update version 5 arrives for employee `emp-tomb-u` before any create. The row stores that version. Create version 3 is `STALE_IGNORED` and the version 5 fields remain.
+Update version 5 arrives for employee `emp-tomb-u` before any create. The row is `PLACEHOLDER` at that version, so it is left out of the active count and out of a normal read. Create version 3 is `STALE_IGNORED` and the version 5 fields remain. Create version 8 is the first real create: the row becomes `ACTIVE` and a normal read returns it.
 
 Deactivate version 4 arrives for employee `emp-tomb-d` before any create. The row is `DEACTIVATED` at `hr_version` 4. Create version 2 is `STALE_IGNORED` and the employee stays deactivated. Create version 6 is newer, so it is `APPLIED`, the HR fields are stored, and the status becomes `ACTIVE`.
 

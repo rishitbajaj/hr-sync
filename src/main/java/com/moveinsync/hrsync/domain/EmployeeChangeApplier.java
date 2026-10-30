@@ -47,11 +47,16 @@ public final class EmployeeChangeApplier {
                     fields.specialAssistance(),
                     0,
                     command.version(),
-                    EmployeeStatus.ACTIVE,
+                    EmployeeStatus.PLACEHOLDER,
                     now
             );
         }
         boolean deactivate = command.type() == EventType.DEACTIVATE;
+        EmployeeStatus status = switch (command.type()) {
+            case CREATE -> EmployeeStatus.ACTIVE;
+            case DEACTIVATE -> EmployeeStatus.DEACTIVATED;
+            case UPDATE -> EmployeeStatus.PLACEHOLDER;
+        };
         return HrEmployee.rehydrate(
                 null,
                 command.tenantId(),
@@ -65,7 +70,7 @@ public final class EmployeeChangeApplier {
                 null,
                 command.version(),
                 0,
-                deactivate ? EmployeeStatus.DEACTIVATED : EmployeeStatus.ACTIVE,
+                status,
                 now
         );
     }
