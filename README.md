@@ -28,3 +28,9 @@ Machine: WSL2 (`Linux romrom 6.6.87.2-microsoft-standard-WSL2`), AMD Ryzen 7 784
 A scheduled job deletes `PUBLISHED` outbox rows and `processed_event` rows older than `hr-sync.retention.age`, `hr-sync.retention.batch-size` rows at a time. `FAILED` outbox rows stay so an operator can inspect them. `PENDING` rows stay until they are published or fail.
 
 After a `processed_event` row is pruned, replaying that version does not apply it again. The stored channel version is still compared, and a version that is not newer is `STALE_IGNORED`. That version comparison is the backstop once the idempotency row is gone.
+
+## Known limitations
+
+Logs may include personal field names (`name`, `email`, `phone`, `pickupPoint`, and the other names in `changedFields`). They do not include the values.
+
+A mixed diff of about 5% of 200,000 rows takes about 36 s (36.217 s on this machine) because each create, update, and deactivation is its own transaction. The hash diff itself, on an identical 200,000-row export, takes about 2 s (1.814 s and 2.217 s).
