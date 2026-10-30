@@ -118,6 +118,12 @@ public class ReconciliationService {
             if (current.isEmpty()) {
                 throw new ReconciliationNotFoundException();
             }
+            if ("SUPERSEDED".equals(current.get(0))) {
+                throw new ReconciliationConflictException(
+                        "SUPERSEDED",
+                        "This reconciliation run was superseded by a later run"
+                );
+            }
             if (!"HALTED".equals(current.get(0))) {
                 throw new ReconciliationConflictException();
             }
@@ -514,15 +520,18 @@ public class ReconciliationService {
     private UUID insertRun(String tenantId) {
         UUID id = UUID.randomUUID();
         try {
-            jdbc.update(
-                    """
-                            insert into import_run (id, tenant_id, status, started_at)
-                            values (?, ?, 'RUNNING', ?)
-                            """,
-                    id,
-                    tenantId,
-                    Timestamp.from(clock.instant())
-            );
+            reads.executeWithoutResult(status -> {
+                supersedeHalted(tenantId);
+                jdbc.update(
+                        """
+                                insert into import_run (id, tenant_id, status, started_at)
+                                values (?, ?, 'RUNNING', ?)
+                                """,
+                        id,
+                        tenantId,
+                        Timestamp.from(clock.instant())
+                );
+            });
         } catch (DataAccessException exception) {
             if (isUniqueViolation(exception)) {
                 throw new ReconciliationConflictException(
@@ -532,6 +541,20 @@ public class ReconciliationService {
             throw exception;
         }
         return id;
+    }
+
+    private void supersedeHalted(String tenantId) {
+        int count = jdbc.update(
+                """
+                        update import_run
+                        set status = 'SUPERSEDED'
+                        where tenant_id = ? and status = 'HALTED'
+                        """,
+                tenantId
+        );
+        if (count > 0) {
+            log.info("reconciliation superseded tenantId={} count={}", tenantId, count);
+        }
     }
 
     private static boolean isUniqueViolation(DataAccessException exception) {

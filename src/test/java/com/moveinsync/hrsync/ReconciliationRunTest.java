@@ -424,6 +424,63 @@ class ReconciliationRunTest {
     }
 
     @Test
+    void aLaterExportSupersedesTheOlderHaltedRun() throws Exception {
+        String tenant = "recon-supersede";
+        String other = "recon-supersede-other";
+        seedRoster(tenant, 4);
+        seedRoster(other, 4);
+        JsonNode first = postCsv(tenant, csv(tenant, exportFirst(tenant, 2)));
+        JsonNode untouched = postCsv(other, csv(other, exportFirst(other, 2)));
+        assertThat(first.get("status").asText()).isEqualTo("HALTED");
+        assertThat(untouched.get("status").asText()).isEqualTo("HALTED");
+
+        JsonNode second = postCsv(tenant, csv(tenant, exportFirst(tenant, 2)));
+        assertThat(second.get("status").asText()).isEqualTo("HALTED");
+        assertThat(getRun(tenant, first.get("id").asText()).get("status").asText()).isEqualTo("SUPERSEDED");
+        assertThat(getRun(other, untouched.get("id").asText()).get("status").asText()).isEqualTo("HALTED");
+        assertThat(deactivated(tenant)).isZero();
+        assertThat(deactivated(other)).isZero();
+
+        HttpHeaders operator = operatorHeaders();
+        String firstUrl = "/reconciliation/runs/" + first.get("id").asText() + "/approve?tenantId=" + tenant;
+        ResponseEntity<String> rejected = restTemplate.exchange(
+                firstUrl, HttpMethod.POST, new HttpEntity<>(operator), String.class);
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(rejected.getBody()).contains("\"code\":\"SUPERSEDED\"");
+        assertThat(rejected.getBody()).doesNotContain("Person").doesNotContain("@example.com");
+        assertThat(deactivated(tenant)).isZero();
+        assertThat(deactivated(other)).isZero();
+        assertThat(status(other, "emp-2")).isEqualTo("ACTIVE");
+        assertThat(status(other, "emp-3")).isEqualTo("ACTIVE");
+
+        String secondUrl = "/reconciliation/runs/" + second.get("id").asText() + "/approve?tenantId=" + tenant;
+        ResponseEntity<String> approved = restTemplate.exchange(
+                secondUrl, HttpMethod.POST, new HttpEntity<>(operator), String.class);
+        assertThat(approved.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(objectMapper.readTree(approved.getBody()).get("status").asText()).isEqualTo("APPROVED");
+        assertThat(status(tenant, "emp-0")).isEqualTo("ACTIVE");
+        assertThat(status(tenant, "emp-1")).isEqualTo("ACTIVE");
+        assertThat(status(tenant, "emp-2")).isEqualTo("DEACTIVATED");
+        assertThat(status(tenant, "emp-3")).isEqualTo("DEACTIVATED");
+        assertThat(deactivated(tenant)).isEqualTo(2);
+        assertThat(deactivated(other)).isZero();
+
+        ResponseEntity<String> twice = restTemplate.exchange(
+                secondUrl, HttpMethod.POST, new HttpEntity<>(operator), String.class);
+        assertThat(twice.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(deactivated(tenant)).isEqualTo(2);
+
+        assertThat(getRun(other, untouched.get("id").asText()).get("status").asText()).isEqualTo("HALTED");
+        String otherUrl = "/reconciliation/runs/" + untouched.get("id").asText() + "/approve?tenantId=" + other;
+        ResponseEntity<String> otherApproved = restTemplate.exchange(
+                otherUrl, HttpMethod.POST, new HttpEntity<>(operator), String.class);
+        assertThat(otherApproved.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(objectMapper.readTree(otherApproved.getBody()).get("status").asText()).isEqualTo("APPROVED");
+        assertThat(deactivated(other)).isEqualTo(2);
+        assertThat(deactivated(tenant)).isEqualTo(2);
+    }
+
+    @Test
     void aSecondRunForTheSameTenantIsRejectedWhileTheFirstIsRunning() throws Exception {
         String tenant = "recon-lock";
         seedRoster(tenant, 4);

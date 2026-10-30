@@ -146,12 +146,14 @@ One app process and one Postgres. Offices exist before an HR event names them. T
 | GET | `/employees/{id}` | employee (self), admin, operator with `tenantId` | `tenantId`, `employeeId`, `status`, `officeCode`, `shift`. Placeholders are not returned |
 | POST | `/reconciliation/runs?tenantId=` | admin | `text/csv` export |
 | GET | `/reconciliation/runs/{id}?tenantId=` | admin or operator | run status |
-| POST | `/reconciliation/runs/{id}/approve?tenantId=` | operator | apply a halted deactivation set |
+| POST | `/reconciliation/runs/{id}/approve?tenantId=` | operator | apply a halted deactivation set. A `SUPERSEDED` run is 409 with code `SUPERSEDED` |
 | GET | `/outbox/failed?tenantId=` | operator | failed rows |
 | POST | `/outbox/{id}/replay?tenantId=` | operator | failed row back to pending |
 | POST | `/outbox/{id}/discard?tenantId=` | operator | body `{"reason":"..."}`, failed row only |
 | GET | `/actuator/prometheus` | operator | `Accept: text/plain` |
 | POST, GET | `/demo/**` | anyone, demo profile only | trips, bookings, failure injection |
+
+A new reconciliation run marks every older `HALTED` run for that tenant `SUPERSEDED`. Approving that older run deactivates nobody. Approving the latest halted run still applies once. A halted run for another tenant stays `HALTED`.
 
 Outcomes on both ingest paths:
 
@@ -369,7 +371,7 @@ A rerun of that kill command after the invariant change exited 0. Of 110,600 eve
 
 ## Verification
 
-`mvn -B test` on 2026-10-30, from a fresh clone of `d3d29e0`: 191 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=1895 peakHeapBytes=85538256 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-30: 192 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2418 peakHeapBytes=85477824 maxHeapBytes=268435456`.
 
 ## Known limitations
 

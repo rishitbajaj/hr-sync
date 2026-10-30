@@ -53,7 +53,7 @@ sequenceDiagram
   participant Operator
   Admin->>API: POST /reconciliation/runs text/csv
   API->>Diff: hash export and active rows into 256 buckets
-  Diff->>DB: insert import_run RUNNING
+  Diff->>DB: mark older HALTED runs SUPERSEDED, insert import_run RUNNING
   alt missing divided by active is above 0.30
     Diff->>DB: save candidates, status HALTED
     API-->>Admin: HALTED, nothing deactivated
@@ -65,7 +65,7 @@ sequenceDiagram
   end
 ```
 
-A second run for a tenant that already has `RUNNING` gets 409. Startup marks every `RUNNING` row `FAILED` with reason `INTERRUPTED`. Each create, update, and deactivation commits on its own, so a crash keeps the ones that committed. Approval deactivates only when `hr_version` still equals the version saved with the halt, and it does not insert `processed_event`.
+A second run for a tenant that already has `RUNNING` gets 409. Starting a run marks every older `HALTED` run for that tenant `SUPERSEDED`. Approving a `SUPERSEDED` run returns 409 with code `SUPERSEDED` and deactivates nobody. The latest halted run can still be approved once. A halted run for another tenant stays `HALTED`. Startup marks every `RUNNING` row `FAILED` with reason `INTERRUPTED`. Each create, update, and deactivation commits on its own, so a crash keeps the ones that committed. Approval deactivates only when `hr_version` still equals the version saved with the halt, and it does not insert `processed_event`.
 
 ## Data model
 
@@ -86,6 +86,7 @@ HR may write name, email, phone, manager, office, shift, `hr_version`, and statu
 | Publisher throws | Same as a booking failure | Same retry. Other employees in the tick continue |
 | Duplicate or out-of-order event | 200, `DUPLICATE` or `STALE_IGNORED` | Nothing is written. A batch is applied in version order. The response stays in request order |
 | Truncated export | 200, run `HALTED`, `MISSING_RATIO_EXCEEDED` | No deactivation until an operator approves. The threshold is 0.30. A repeated employee id, or a row for another tenant, is 400 and writes no employees |
+| Approving a superseded halt | 409 `SUPERSEDED` | A later run for that tenant replaced this one. Approve the later halted run. Another tenant's halt stays `HALTED` |
 | Two reconciliations at once | 409 `CONFLICT` | The partial unique index allows one `RUNNING` row per tenant |
 | Expired, bad, or missing token | 401 `UNAUTHORIZED` | Sign in again. Tokens last 15 minutes. The wrong role is 403 |
 

@@ -109,9 +109,14 @@ public class ApiExceptionHandler {
         return badRequest("INVALID_REQUEST", exception.getMessage());
     }
 
-    @ExceptionHandler({OutboxConflictException.class, ReconciliationConflictException.class})
-    public ResponseEntity<ApiError> conflict(RuntimeException exception) {
+    @ExceptionHandler(OutboxConflictException.class)
+    public ResponseEntity<ApiError> outboxConflict(OutboxConflictException exception) {
         return ResponseEntity.status(409).body(new ApiError("CONFLICT", exception.getMessage()));
+    }
+
+    @ExceptionHandler(ReconciliationConflictException.class)
+    public ResponseEntity<ApiError> reconciliationConflict(ReconciliationConflictException exception) {
+        return ResponseEntity.status(409).body(new ApiError(exception.code(), exception.getMessage()));
     }
 
     @ExceptionHandler({OutboxNotFoundException.class, ReconciliationNotFoundException.class})
