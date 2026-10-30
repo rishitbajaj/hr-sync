@@ -111,7 +111,10 @@ class IngestGuardTest {
 
     private static MockMvc mvc(InMemoryChangeStore store, IngestLimits limits) {
         OfficeDirectory offices = (tenantId, officeCode) -> SampleHrBatch.OFFICE.equals(officeCode);
-        SyncEventService service = new SyncEventService(new BatchIngestor(new EventValidator(), offices, store));
+        SyncEventService service = new SyncEventService(
+                new BatchIngestor(new EventValidator(), offices, store),
+                new com.moveinsync.hrsync.metrics.SyncMeters(new io.micrometer.core.instrument.simple.SimpleMeterRegistry())
+        );
         return MockMvcBuilders.standaloneSetup(new SyncEventController(service, limits))
                 .setControllerAdvice(new IngestExceptionHandler())
                 .addFilters(new IngestBodySizeFilter(limits))

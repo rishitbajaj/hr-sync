@@ -30,15 +30,19 @@ public class LoginLockout {
         return current != null && current.lockedUntil != null && current.lockedUntil.isAfter(clock.instant());
     }
 
-    public void recordFailure(String username) {
+    public boolean recordFailure(String username) {
         Instant now = clock.instant();
         int maxFailures = settings.getMaxLoginFailures();
+        boolean[] started = {false};
         attempts.compute(username, (key, current) -> {
             boolean expired = current != null && current.lockedUntil != null && !current.lockedUntil.isAfter(now);
             int count = current == null || expired ? 1 : current.count + 1;
             Instant lockedUntil = count >= maxFailures ? now.plus(settings.getLoginLockout()) : null;
+            boolean alreadyLocked = current != null && current.lockedUntil != null && !expired;
+            started[0] = lockedUntil != null && !alreadyLocked;
             return new Attempt(count, lockedUntil);
         });
+        return started[0];
     }
 
     public void clear(String username) {

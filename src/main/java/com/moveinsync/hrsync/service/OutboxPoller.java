@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.config.OutboxSettings;
 import com.moveinsync.hrsync.domain.ChangeNotice;
 import com.moveinsync.hrsync.domain.EventPublisher;
+import com.moveinsync.hrsync.metrics.SyncMeters;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -56,6 +57,7 @@ public class OutboxPoller {
     private final OutboxSettings settings;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final SyncMeters meters;
 
     public OutboxPoller(
             JdbcTemplate jdbc,
@@ -65,7 +67,8 @@ public class OutboxPoller {
             OutboxPublishGuard guard,
             OutboxSettings settings,
             ObjectMapper objectMapper,
-            Clock clock
+            Clock clock,
+            SyncMeters meters
     ) {
         this.jdbc = jdbc;
         this.transactions = new TransactionTemplate(transactionManager);
@@ -75,6 +78,7 @@ public class OutboxPoller {
         this.settings = settings;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.meters = meters;
     }
 
     public int poll() {
@@ -105,6 +109,7 @@ public class OutboxPoller {
                 publisher.publish(claimedRow.notice());
             } catch (RuntimeException exception) {
                 recordFailure(claimedRow, exception);
+                meters.outboxRetried();
                 continue;
             }
             jdbc.update(
@@ -117,6 +122,7 @@ public class OutboxPoller {
                     claimedRow.notice().eventId(),
                     claimedRow.notice().tenantId()
             );
+            meters.outboxPublished();
             delivered++;
         }
         return delivered;

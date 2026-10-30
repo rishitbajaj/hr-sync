@@ -2,6 +2,7 @@ package com.moveinsync.hrsync.config;
 
 import com.moveinsync.hrsync.auth.JwtAuthenticationFilter;
 import com.moveinsync.hrsync.auth.JwtService;
+import com.moveinsync.hrsync.metrics.SyncMeters;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -23,7 +24,7 @@ public class SecurityConfig {
     static final String FORBIDDEN = "{\"error\":\"FORBIDDEN\",\"message\":\"Forbidden\"}";
 
     @Bean
-    SecurityFilterChain security(HttpSecurity http, JwtService tokens) throws Exception {
+    SecurityFilterChain security(HttpSecurity http, JwtService tokens, SyncMeters meters) throws Exception {
         return http
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -46,7 +47,7 @@ public class SecurityConfig {
                         .authenticationEntryPoint((request, response, exception) -> write(response, 401, UNAUTHORIZED))
                         .accessDeniedHandler((request, response, exception) -> write(response, 403, FORBIDDEN)))
                 .httpBasic(AbstractHttpConfigurer::disable)
-                .addFilterBefore(new JwtAuthenticationFilter(tokens), UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(new JwtAuthenticationFilter(tokens, meters), UsernamePasswordAuthenticationFilter.class)
                 .build();
     }
 

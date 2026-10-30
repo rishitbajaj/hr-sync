@@ -26,10 +26,16 @@ server:
     max-swallow-size: -1
 
 management:
+  endpoint:
+    prometheus:
+      access: unrestricted
   endpoints:
     web:
       exposure:
-        include: health,metrics
+        include:
+          - health
+          - metrics
+          - prometheus
 
 logging:
   level:
@@ -51,6 +57,8 @@ hr-sync:
     token-ttl: 15m
     max-login-failures: 5
     login-lockout: 15m
+  metrics:
+    sample-interval: 10s
   bootstrap:
     operator-username: ${HR_SYNC_BOOTSTRAP_OPERATOR_USERNAME:}
     operator-password: ${HR_SYNC_BOOTSTRAP_OPERATOR_PASSWORD:}

@@ -4,10 +4,16 @@ spring:
       enabled: false
 
 management:
+  endpoint:
+    prometheus:
+      access: unrestricted
   endpoints:
     web:
       exposure:
-        include: health,metrics
+        include:
+          - health
+          - metrics
+          - prometheus
 
 hr-sync:
   auth:

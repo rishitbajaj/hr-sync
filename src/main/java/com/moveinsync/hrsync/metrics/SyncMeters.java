@@ -1,0 +1,100 @@
+package com.moveinsync.hrsync.metrics;
+
+import com.moveinsync.hrsync.domain.FieldChannel;
+import com.moveinsync.hrsync.domain.IngestResult;
+import com.moveinsync.hrsync.domain.Outcome;
+import com.moveinsync.hrsync.domain.ReasonCode;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+
+@Component
+public class SyncMeters {
+
+    private final MeterRegistry registry;
+    private final Timer ingestDuration;
+    private final Timer reconciliationDuration;
+
+    public SyncMeters(MeterRegistry registry) {
+        this.registry = registry;
+        this.ingestDuration = Timer.builder("ingest.duration")
+                .publishPercentileHistogram()
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .register(registry);
+        this.reconciliationDuration = Timer.builder("reconciliation.duration")
+                .publishPercentileHistogram()
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .register(registry);
+    }
+
+    public void recordIngest(IngestResult result, FieldChannel channel) {
+        String reason = result.reasonCode() == null ? "none" : result.reasonCode().name();
+        registry.counter(counterName(result), "reason", reason, "channel", channel.name()).increment();
+    }
+
+    public void recordIngestDuration(Duration duration) {
+        ingestDuration.record(duration);
+    }
+
+    public void recordReconciliationDuration(Duration duration) {
+        reconciliationDuration.record(duration);
+    }
+
+    public void reconciliationFinished(String status) {
+        registry.counter("reconciliation.runs", "status", status).increment();
+        if ("HALTED".equals(status)) {
+            registry.counter("reconciliation.halted", "reason", "MISSING_RATIO_EXCEEDED").increment();
+        }
+    }
+
+    public void outboxPublished() {
+        registry.counter("outbox.published").increment();
+    }
+
+    public void outboxRetried() {
+        registry.counter("outbox.retries").increment();
+    }
+
+    public void bookingsCancelled(int count) {
+        if (count > 0) {
+            registry.counter("deactivation.bookings.cancelled").increment(count);
+        }
+    }
+
+    public void seatsFreed(int count) {
+        if (count > 0) {
+            registry.counter("deactivation.seats.freed").increment(count);
+        }
+    }
+
+    public void deactivationFailed() {
+        registry.counter("deactivation.effect.failures").increment();
+    }
+
+    public void loginFailed() {
+        registry.counter("auth.login.failures").increment();
+    }
+
+    public void lockout() {
+        registry.counter("auth.lockouts").increment();
+    }
+
+    public void tokenRejected() {
+        registry.counter("auth.rejected.tokens").increment();
+    }
+
+    private static String counterName(IngestResult result) {
+        if (result.outcome() == Outcome.APPLIED) {
+            return "ingest.applied";
+        }
+        if (result.outcome() == Outcome.IGNORED && result.reasonCode() == ReasonCode.STALE_IGNORED) {
+            return "ingest.stale_ignored";
+        }
+        if (result.outcome() == Outcome.IGNORED && result.reasonCode() == ReasonCode.DUPLICATE) {
+            return "ingest.duplicate";
+        }
+        return "ingest.rejected";
+    }
+}

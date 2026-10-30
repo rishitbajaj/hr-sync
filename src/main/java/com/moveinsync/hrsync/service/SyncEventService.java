@@ -5,10 +5,12 @@ import com.moveinsync.hrsync.domain.FieldChannel;
 import com.moveinsync.hrsync.domain.IngestResult;
 import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.SyncEvent;
+import com.moveinsync.hrsync.metrics.SyncMeters;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.List;
 
 @Service
@@ -17,9 +19,11 @@ public class SyncEventService {
     private static final Logger log = LoggerFactory.getLogger(SyncEventService.class);
 
     private final BatchIngestor ingestor;
+    private final SyncMeters meters;
 
-    public SyncEventService(BatchIngestor ingestor) {
+    public SyncEventService(BatchIngestor ingestor, SyncMeters meters) {
         this.ingestor = ingestor;
+        this.meters = meters;
     }
 
     public List<IngestResult> ingest(List<SyncEvent> events) {
@@ -27,8 +31,13 @@ public class SyncEventService {
     }
 
     public List<IngestResult> ingest(List<SyncEvent> events, FieldChannel channel) {
+        long started = System.nanoTime();
         List<IngestResult> results = ingestor.ingest(events, channel);
-        results.forEach(this::logResult);
+        meters.recordIngestDuration(Duration.ofNanos(System.nanoTime() - started));
+        results.forEach(result -> {
+            meters.recordIngest(result, channel);
+            logResult(result);
+        });
         return results;
     }
 

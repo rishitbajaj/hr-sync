@@ -187,7 +187,10 @@ class BatchIngestTest {
     private static SyncEventService service(InMemoryChangeStore store) {
         OfficeDirectory offices = (tenantId, officeCode) ->
                 SampleHrBatch.TENANT.equals(tenantId) && SampleHrBatch.OFFICE.equals(officeCode);
-        return new SyncEventService(new BatchIngestor(new EventValidator(), offices, store));
+        return new SyncEventService(
+                new BatchIngestor(new EventValidator(), offices, store),
+                new com.moveinsync.hrsync.metrics.SyncMeters(new io.micrometer.core.instrument.simple.SimpleMeterRegistry())
+        );
     }
 
     private static void assertCapturedLogsOmitSensitiveValues(ListAppender<ILoggingEvent> logs, int ingestLines) {

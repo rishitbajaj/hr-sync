@@ -9,7 +9,7 @@ import com.moveinsync.hrsync.domain.IngestResult;
 import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.RosterHash;
 import com.moveinsync.hrsync.domain.SyncEvent;
-import io.micrometer.core.instrument.MeterRegistry;
+import com.moveinsync.hrsync.metrics.SyncMeters;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -40,6 +40,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.Duration;
 import java.util.UUID;
 
 @Service
@@ -64,7 +65,7 @@ public class ReconciliationService {
     private final EmployeeChangeService changes;
     private final Clock clock;
     private final TransactionTemplate reads;
-    private final MeterRegistry meters;
+    private final SyncMeters meters;
 
     public ReconciliationService(
             JdbcTemplate jdbc,
@@ -74,7 +75,7 @@ public class ReconciliationService {
             EmployeeChangeService changes,
             Clock clock,
             PlatformTransactionManager transactionManager,
-            MeterRegistry meters
+            SyncMeters meters
     ) {
         this.jdbc = jdbc;
         this.settings = settings;
@@ -87,19 +88,26 @@ public class ReconciliationService {
     }
 
     public ReconciliationRunResponse run(String tenantId, InputStream csv) {
-        if (tenantId == null || tenantId.isBlank()) {
-            throw new ReconciliationException("tenantId is required");
-        }
-        Path temp = tempFile();
+        long started = System.nanoTime();
         try {
-            copy(csv, temp);
-            return reconcile(temp, tenantId);
+            if (tenantId == null || tenantId.isBlank()) {
+                throw new ReconciliationException("tenantId is required");
+            }
+            Path temp = tempFile();
+            try {
+                copy(csv, temp);
+                return reconcile(temp, tenantId);
+            } finally {
+                delete(temp);
+            }
         } finally {
-            delete(temp);
+            meters.recordReconciliationDuration(Duration.ofNanos(System.nanoTime() - started));
         }
     }
 
     public ReconciliationRunResponse approve(UUID id, String tenantId) {
+        long started = System.nanoTime();
+        try {
         reads.executeWithoutResult(status -> {
             List<String> current = jdbc.query(
                     "select status from import_run where id = ? and tenant_id = ? for update",
@@ -121,6 +129,7 @@ public class ReconciliationService {
                     tenantId
             );
         });
+        meters.reconciliationFinished("APPROVED");
         ReconciliationRunResponse response = get(id, tenantId);
         log.info(
                 "reconciliation approved runId={} tenantId={} missingCount={}",
@@ -129,6 +138,9 @@ public class ReconciliationService {
                 response.missingCount()
         );
         return response;
+        } finally {
+            meters.recordReconciliationDuration(Duration.ofNanos(System.nanoTime() - started));
+        }
     }
 
     public ReconciliationRunResponse get(UUID id, String tenantId) {
@@ -202,7 +214,6 @@ public class ReconciliationService {
         if (exceedsMissingRatio(diff.missing(), activeCount)) {
             saveCandidates(id, tenantId, heads);
             finish(id, tenantId, "HALTED", diff, 0, activeCount, scan.rowCount(), HALT_REASON);
-            meters.counter("reconciliation.halted", "reason", HALT_REASON).increment();
             ReconciliationRunResponse halted = get(id, tenantId);
             log.warn(
                     "reconciliation halted runId={} tenantId={} missingCount={} activeCount={} ratio={} threshold={} reason={}",
@@ -253,6 +264,7 @@ public class ReconciliationService {
                 tenantId,
                 exception.getClass().getSimpleName()
         );
+        meters.reconciliationFinished("FAILED");
     }
 
     private Diff classify(
@@ -585,6 +597,7 @@ public class ReconciliationService {
                 id,
                 tenantId
         );
+        meters.reconciliationFinished(status);
     }
 
     private void saveRejections(UUID id, List<Rejection> rejections) {

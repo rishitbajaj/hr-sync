@@ -6,6 +6,7 @@ import com.moveinsync.hrsync.booking.BookingClient;
 import com.moveinsync.hrsync.booking.Cancellation;
 import com.moveinsync.hrsync.domain.ChangeNotice;
 import com.moveinsync.hrsync.domain.OutboxEvents;
+import com.moveinsync.hrsync.metrics.SyncMeters;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -23,6 +24,7 @@ public class DeactivationEventConsumer {
     private final BookingClient bookings;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final SyncMeters meters;
     private volatile Runnable afterCancel = () -> {
     };
 
@@ -30,12 +32,14 @@ public class DeactivationEventConsumer {
             JdbcTemplate jdbc,
             BookingClient bookings,
             ObjectMapper objectMapper,
-            Clock clock
+            Clock clock,
+            SyncMeters meters
     ) {
         this.jdbc = jdbc;
         this.bookings = bookings;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.meters = meters;
     }
 
     public void setAfterCancel(Runnable afterCancel) {
@@ -47,6 +51,15 @@ public class DeactivationEventConsumer {
         if (notice == null || !OutboxEvents.EMPLOYEE_DEACTIVATED.equals(notice.eventType())) {
             return;
         }
+        try {
+            apply(notice);
+        } catch (RuntimeException exception) {
+            meters.deactivationFailed();
+            throw exception;
+        }
+    }
+
+    private void apply(ChangeNotice notice) {
         if (alreadyHandled(notice.eventId(), notice.tenantId())) {
             return;
         }
@@ -79,6 +92,8 @@ public class DeactivationEventConsumer {
                 cancellation.seatsFreed(),
                 cancellation.bookingIds().size()
         );
+        meters.bookingsCancelled(cancellation.bookingIds().size());
+        meters.seatsFreed(cancellation.seatsFreed());
     }
 
     private boolean alreadyHandled(long eventId, String tenantId) {

@@ -538,7 +538,8 @@ class OutboxPollerTest {
                 publishGuard,
                 settings,
                 objectMapper,
-                clock
+                clock,
+                new com.moveinsync.hrsync.metrics.SyncMeters(new io.micrometer.core.instrument.simple.SimpleMeterRegistry())
         );
     }
 
