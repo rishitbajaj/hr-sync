@@ -43,4 +43,12 @@ POST /demo/failures  {"failures":1,"timeouts":0,"lostResponses":0}
 GET  /demo/bookings
 ```
 
-The bodies carry ids and times only.
+The bodies carry ids and times only. `GET /demo/bookings` also returns `cancelled`, `capacity`, and `occupied`.
+
+## Measured
+
+On 2026-10-30 the suite at `bf68fe0` was 76 tests, 0 failures, 0 skipped. Benchmark: `reconciliation benchmark rows=200000 elapsedMs=2841 peakHeapBytes=82241528 maxHeapBytes=268435456`.
+
+With 100,000 booked rows, the future-booking lookup is an Index Scan on `idx_booking_booked_employee_start` (79 rows for one employee, execution 0.708 ms). The cancel update uses that same index (execution 3.308 ms).
+
+A process kill after the booking transaction committed left the two future bookings `CANCELLED` and the outbox row `PENDING` with no effect row. The restarted process published that event once, with `seats_freed` 2.

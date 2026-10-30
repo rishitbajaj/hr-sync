@@ -8,7 +8,57 @@ Machine: WSL2 Linux `romrom` 6.6.87.2-microsoft-standard-WSL2, AMD Ryzen 7 7840H
 
 Verdicts are PASS, PARTIAL, or FAIL. A PASS cites a test, a file, or command output.
 
-## Verdicts
+## Follow-up
+
+The rows below are the audit of `83e36c3`. This section is the status after the fixes on the same branch, measured 2026-10-30. Suite at `bf68fe0`, before this note: Tests run: 76, Failures: 0, Errors: 0, Skipped: 0. Benchmark: `reconciliation benchmark rows=200000 elapsedMs=2841 peakHeapBytes=82241528 maxHeapBytes=268435456`.
+
+| Item | Was | Now | Evidence |
+| --- | --- | --- | --- |
+| Booking lookup at 100,000 bookings | FAIL | PASS | Schema `booking_svc`. 100,000 `BOOKED` rows. `EXPLAIN (ANALYZE, BUFFERS)` for `tenant_id = 'acme' AND employee_id = 'emp-42' AND starts_at > '2026-01-15' AND status = 'BOOKED'`: Index Scan using `idx_booking_booked_employee_start`, actual rows 79, execution 0.708 ms. The cancel `UPDATE` uses the same index (cost 0.42..141.84, actual rows 79, execution 3.308 ms) and rechecks `status = 'BOOKED'` |
+| Cancel commits, then the consumer stops before the effect row | PARTIAL | PASS | `aRollbackAfterTheBookingCommitsDoesNotCancelTwice` aborts the consumer transaction after the booking transaction commits: booking stays cancelled, attempts stay 0, effect row is absent, redelivery records `seats_freed` 1 once. `aLostResponseRetriesTheSameCancellation` throws after the booking commit and the retry records the same seat once |
+| `docker kill` between cancel and outbox commit | PARTIAL | PASS | Probe below. Bookings stayed cancelled across the kill. Restart published one `EMPLOYEE_DEACTIVATED` row, one effect row, `seats_freed` 2, ids `future-a` and `future-b`. The past booking stayed `BOOKED`. The sleep used to open the window was not committed |
+| Lost response | FAIL | PASS | `loseResponseNext` throws `BookingClientException("response lost")` only after `cancelCommitted` returns. `aLostResponseRetriesTheSameCancellation` |
+| Tenant filter | FAIL | PASS | `cancelDoesNotTouchAnotherTenantsBooking`. Mutation that dropped `tenant_id` from the update: that test, line 327, expected the other tenant's booking to stay booked, was cancelled |
+| Repeated cancel frees another seat | FAIL | PASS | `aRepeatedCancelDoesNotFreeAnotherSeat`. Mutation that counted the update again and dropped `status = 'BOOKED'`: that test, line 344, `seatsFreed` expected 1 |
+| `FAILED` deactivation blocks that employee | PARTIAL | PASS | `aFailedDeactivationBlocksThatEmployeeUntilReplay`: the same employee's later create stays `PENDING`, another employee publishes, `GET /outbox/failed` returns the employee id, event id, attempts 3, and `BookingClientException` without the name or email. Replay publishes the deactivation once (`seats_freed` 1) and then the waiting create. `discardingAFailedDeactivationIsAuditedAndUnblocks` records the reason in `outbox_discard` and a blank reason is 400. Missing operator credentials are 401 |
+| `POST /demo/failures` | FAIL | PASS | `demoFailureInjectionFailsTheNextCancel` on the demo profile: one injected failure, then one cancel. `HealthSmokeTest.demoFailureInjectionIsAbsent` on the default profile: 404 |
+| Cutoff | PARTIAL | PASS | `DeactivationEventConsumer` passes `notice.createdAt()` from `outbox.created_at`. `docs/DEACTIVATION.md` says so |
+| Skip dedupe and drop the effect primary key | PASS | PASS | Still caught. Crash test line 254: `cancelCalls` expected 1 |
+| Skip the cancel call | PASS | PASS | Still caught. `deactivationCancelsFutureBookingsOnly` line 126: expected cancelled, was false |
+| Cancel past bookings | PASS | PASS | Still caught. Same test, line 126, after `starts_at >` was changed to `starts_at <=` |
+| Free two seats per booking | PASS | PASS | Still caught. `seatsFreedEqualsCancelledBookings` line 149: expected 2 |
+| Stale deactivation emits an event | PASS | PASS | Still caught. `duplicateAndStaleDeactivationCancelOnce` line 165: second poll expected 0 |
+| Remove the effect insert | PASS | PASS | Still caught. Crash test line 251: effect rows expected 1. Seat test line 149: expected 2 |
+| Personal value logged | PASS | PASS | Still caught. `deactivationLogsAndPayloadsOmitPersonalValues` line 425 |
+| Deactivate-before-create | PARTIAL | PARTIAL | Still not described in `docs/DEACTIVATION.md`. The code path is unchanged |
+
+`docker kill` used Postgres `hrsync-crash-pg` and an app container on port 8083 with the demo profile. The jar slept 25 seconds after the booking transaction and before the effect insert. That sleep is not in the branch. During the pause the bookings were already cancelled and the effect table was empty:
+
+```
+ booking_id |  status   | cancelled_by_event_id
+ future-a   | CANCELLED |                     2
+ future-b   | CANCELLED |                     2
+ past       | BOOKED    |
+ id | event_type           | status  | attempts
+  2 | EMPLOYEE_DEACTIVATED  | PENDING |        0
+ effects
+       0
+```
+
+`docker kill hrsync-crash-app` left those rows unchanged. The restarted process, without the sleep, published event 2 once:
+
+```
+ id | event_type           | status    | attempts
+  2 | EMPLOYEE_DEACTIVATED  | PUBLISHED |        0
+ event_id | seats_freed | cancelled_booking_ids
+        2 |           2 | ["future-a", "future-b"]
+ deactivation_rows
+                 1
+```
+
+`past` stayed `BOOKED`. `cancelled_by_event_id` stayed 2.
+
+## Verdicts at 83e36c3
 
 | Item | Verdict | Evidence |
 | --- | --- | --- |
