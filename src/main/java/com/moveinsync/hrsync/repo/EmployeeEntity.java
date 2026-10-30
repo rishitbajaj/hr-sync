@@ -40,6 +40,9 @@ public class EmployeeEntity {
     @Column(name = "office_code", length = 64)
     private String officeCode;
 
+    @Column(length = 32)
+    private String shift;
+
     @Column(name = "pickup_point", length = 500)
     private String pickupPoint;
 
@@ -73,6 +76,7 @@ public class EmployeeEntity {
         phone = employee.phone();
         manager = employee.manager();
         officeCode = employee.officeCode();
+        shift = employee.shift();
         pickupPoint = employee.pickupPoint();
         specialAssistance = employee.specialAssistance();
         hrVersion = employee.hrVersion();
@@ -91,6 +95,7 @@ public class EmployeeEntity {
                 phone,
                 manager,
                 officeCode,
+                shift,
                 pickupPoint,
                 specialAssistance,
                 hrVersion,

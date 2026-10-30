@@ -30,9 +30,9 @@ Transport updates use the same shape with `transport_version`. If a concurrent w
 
 ## Field ownership
 
-HR events may change only `name`, `email`, `phone`, `manager`, `office_code`, `hr_version`, and `status`. Transport-admin events (`POST /sync/transport-events`) may change only `pickup_point`, `special_assistance`, and `transport_version`.
+HR events may change only `name`, `email`, `phone`, `manager`, `office_code`, `shift`, `hr_version`, and `status`. Transport-admin events (`POST /sync/transport-events`) may change only `pickup_point`, `special_assistance`, and `transport_version`.
 
-An HR payload that also contains a pickup point or special-assistance value does not write those columns. A transport payload that contains name, email, phone, manager, or office does not write those columns and does not change status.
+An HR payload that also contains a pickup point or special-assistance value does not write those columns. A transport payload that contains name, email, phone, manager, office, or shift does not write those columns and does not change status. A shift, when present, must be 1–32 characters of letters, digits, spaces, and hyphens, starting with a letter or digit. Anything else is `INVALID_SHIFT`.
 
 ## Tombstone rule
 
@@ -52,7 +52,7 @@ Before applying, the batch is sorted by tenant, employee, then `source_version`.
 
 ## Examples
 
-Office transfer version 7 arrives, then an earlier HR change version 6. There is no shift column; the version 7 name is the rest of that HR state. Version 7 is `APPLIED`. Version 6 is `STALE_IGNORED`. The employee remains in the version 7 office with the version 7 name and `hr_version` 7.
+Office transfer version 7 arrives, then shift change version 6. Version 7 is `APPLIED`. Version 6 is `STALE_IGNORED`. The employee remains in the version 7 office with the version 7 shift and `hr_version` 7.
 
 The same feed is posted again. Every second-pass result is `DUPLICATE` or `STALE_IGNORED`. Names, contact fields, office, pickup point, assistance, both versions, status, and `updated_at` stay as they were.
 

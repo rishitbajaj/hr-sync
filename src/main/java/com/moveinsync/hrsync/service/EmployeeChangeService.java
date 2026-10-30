@@ -29,7 +29,7 @@ public class EmployeeChangeService implements ChangeStore {
     private static final int ATTEMPTS = 5;
 
     private static final String FIND = """
-            select id, tenant_id, employee_id, name, email, phone, manager, office_code,
+            select id, tenant_id, employee_id, name, email, phone, manager, office_code, shift,
                    pickup_point, special_assistance, hr_version, transport_version, status, updated_at
             from employee
             where tenant_id = ? and employee_id = ?
@@ -38,14 +38,14 @@ public class EmployeeChangeService implements ChangeStore {
 
     private static final String INSERT_EMPLOYEE = """
             insert into employee (
-                id, tenant_id, employee_id, name, email, phone, manager, office_code,
+                id, tenant_id, employee_id, name, email, phone, manager, office_code, shift,
                 pickup_point, special_assistance, hr_version, transport_version, status, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private static final String UPDATE_HR = """
             update employee
-            set name = ?, email = ?, phone = ?, manager = ?, office_code = ?,
+            set name = ?, email = ?, phone = ?, manager = ?, office_code = ?, shift = ?,
                 hr_version = ?, status = ?, updated_at = ?
             where tenant_id = ? and employee_id = ? and hr_version < ?
             """;
@@ -147,6 +147,7 @@ public class EmployeeChangeService implements ChangeStore {
                 employee.phone(),
                 employee.manager(),
                 employee.officeCode(),
+                employee.shift(),
                 employee.pickupPoint(),
                 employee.specialAssistance(),
                 employee.hrVersion(),
@@ -165,6 +166,7 @@ public class EmployeeChangeService implements ChangeStore {
                     employee.phone(),
                     employee.manager(),
                     employee.officeCode(),
+                    employee.shift(),
                     employee.hrVersion(),
                     employee.status().name(),
                     Timestamp.from(employee.updatedAt()),
@@ -208,6 +210,7 @@ public class EmployeeChangeService implements ChangeStore {
                 rs.getString("phone"),
                 rs.getString("manager"),
                 rs.getString("office_code"),
+                rs.getString("shift"),
                 rs.getString("pickup_point"),
                 rs.getString("special_assistance"),
                 rs.getLong("hr_version"),

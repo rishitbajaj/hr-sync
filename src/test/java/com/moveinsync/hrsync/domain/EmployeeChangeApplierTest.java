@@ -33,18 +33,19 @@ class EmployeeChangeApplierTest {
     @Test
     void hrChangeNeverCopiesTransportFields() {
         HrEmployee current = HrEmployee.rehydrate(
-                null, "acme", "e1", "Ada", "ada@example.com", "+15550000001", "M1", "BLR",
+                null, "acme", "e1", "Ada", "ada@example.com", "+15550000001", "M1", "BLR", "NIGHT",
                 "Gate 4", "wheelchair", 1, 9, EmployeeStatus.ACTIVE, Instant.EPOCH
         );
         ChangeCommand command = new ChangeCommand(
                 "acme", "e1", 2, EventType.UPDATE, FieldChannel.HR,
-                new EmployeeFields("Ada Lovelace", null, null, null, "HYD", "Home Lane", "none")
+                new EmployeeFields("Ada Lovelace", null, null, null, "HYD", "Home Lane", "none", "DAY")
         );
 
         HrEmployee next = applier.decide(current, false, command).state();
 
         assertThat(next.name()).isEqualTo("Ada Lovelace");
         assertThat(next.officeCode()).isEqualTo("HYD");
+        assertThat(next.shift()).isEqualTo("DAY");
         assertThat(next.pickupPoint()).isEqualTo("Gate 4");
         assertThat(next.specialAssistance()).isEqualTo("wheelchair");
         assertThat(next.hrVersion()).isEqualTo(2);
@@ -56,7 +57,7 @@ class EmployeeChangeApplierTest {
         HrEmployee current = employee(4, 1);
         ChangeCommand command = new ChangeCommand(
                 "acme", "e1", 2, EventType.UPDATE, FieldChannel.TRANSPORT,
-                new EmployeeFields("Stolen", "stolen@example.com", "+15550000999", "X", "ZZZ", "Gate 9", "escort")
+                new EmployeeFields("Stolen", "stolen@example.com", "+15550000999", "X", "ZZZ", "Gate 9", "escort", "STOLEN")
         );
 
         HrEmployee next = applier.decide(current, false, command).state();
@@ -64,6 +65,7 @@ class EmployeeChangeApplierTest {
         assertThat(next.name()).isEqualTo("Ada");
         assertThat(next.email()).isEqualTo("ada@example.com");
         assertThat(next.officeCode()).isEqualTo("BLR");
+        assertThat(next.shift()).isEqualTo("NIGHT");
         assertThat(next.pickupPoint()).isEqualTo("Gate 9");
         assertThat(next.specialAssistance()).isEqualTo("escort");
         assertThat(next.hrVersion()).isEqualTo(4);
@@ -107,12 +109,13 @@ class EmployeeChangeApplierTest {
     void transportFirstSightingStaysHiddenUntilAnHrCreate() {
         HrEmployee placeholder = applier.decide(null, false, new ChangeCommand(
                 "acme", "e1", 1, EventType.UPDATE, FieldChannel.TRANSPORT,
-                new EmployeeFields(null, null, null, null, null, "Gate 4", "wheelchair")
+                new EmployeeFields(null, null, null, null, null, "Gate 4", "wheelchair", "STOLEN")
         )).state();
 
         assertThat(placeholder.status()).isEqualTo(EmployeeStatus.PLACEHOLDER);
         assertThat(placeholder.hrVersion()).isZero();
         assertThat(placeholder.pickupPoint()).isEqualTo("Gate 4");
+        assertThat(placeholder.shift()).isNull();
 
         HrEmployee created = applier.decide(placeholder, false, hrCreate(1, "Ada")).state();
         assertThat(created.status()).isEqualTo(EmployeeStatus.ACTIVE);
@@ -124,20 +127,20 @@ class EmployeeChangeApplierTest {
     private static ChangeCommand hrUpdate(long version, String name) {
         return new ChangeCommand(
                 "acme", "e1", version, EventType.UPDATE, FieldChannel.HR,
-                new EmployeeFields(name, null, null, null, null, null, null)
+                new EmployeeFields(name, null, null, null, null, null, null, null)
         );
     }
 
     private static ChangeCommand hrCreate(long version, String name) {
         return new ChangeCommand(
                 "acme", "e1", version, EventType.CREATE, FieldChannel.HR,
-                new EmployeeFields(name, "ada@example.com", "+15550000001", "M1", "BLR", "should-not-stick", null)
+                new EmployeeFields(name, "ada@example.com", "+15550000001", "M1", "BLR", "should-not-stick", null, null)
         );
     }
 
     private static HrEmployee employee(long hrVersion, long transportVersion) {
         return HrEmployee.rehydrate(
-                null, "acme", "e1", "Ada", "ada@example.com", "+15550000001", "M1", "BLR",
+                null, "acme", "e1", "Ada", "ada@example.com", "+15550000001", "M1", "BLR", "NIGHT",
                 "Gate 4", null, hrVersion, transportVersion, EmployeeStatus.ACTIVE, Instant.EPOCH
         );
     }

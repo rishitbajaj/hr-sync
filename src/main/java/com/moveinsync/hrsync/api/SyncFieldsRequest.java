@@ -7,7 +7,8 @@ public record SyncFieldsRequest(
         String manager,
         String officeCode,
         String pickupPoint,
-        String specialAssistance
+        String specialAssistance,
+        String shift
 ) {
     @Override
     public String toString() {

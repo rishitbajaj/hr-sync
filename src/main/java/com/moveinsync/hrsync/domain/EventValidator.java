@@ -7,6 +7,7 @@ public final class EventValidator {
 
     static final Pattern E164 = Pattern.compile("\\+[1-9]\\d{7,14}");
     static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
+    static final Pattern SHIFT = Pattern.compile("[A-Za-z0-9][A-Za-z0-9 -]{0,31}");
     static final int MAX_EMAIL_LENGTH = 320;
 
     public Optional<ReasonCode> validate(SyncEvent event, OfficeDirectory offices, FieldChannel channel) {
@@ -61,7 +62,8 @@ public final class EventValidator {
                 && fields.email() == null
                 && fields.phone() == null
                 && fields.manager() == null
-                && fields.officeCode() == null) {
+                && fields.officeCode() == null
+                && fields.shift() == null) {
             return Optional.of(ReasonCode.MISSING_REQUIRED_FIELD);
         }
         return validatePresentContact(event, fields, offices);
@@ -76,6 +78,9 @@ public final class EventValidator {
         }
         if (fields.officeCode() != null && !offices.exists(event.tenantId(), fields.officeCode())) {
             return Optional.of(ReasonCode.UNKNOWN_OFFICE);
+        }
+        if (fields.shift() != null && !SHIFT.matcher(fields.shift()).matches()) {
+            return Optional.of(ReasonCode.INVALID_SHIFT);
         }
         return Optional.empty();
     }

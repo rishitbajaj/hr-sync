@@ -131,7 +131,7 @@ class IngestGuardTest {
                 employeeId,
                 1L,
                 "CREATE",
-                new SyncFieldsRequest("Ada", email, phone, "M1", SampleHrBatch.OFFICE, SECRET_HOME, null)
+                new SyncFieldsRequest("Ada", email, phone, "M1", SampleHrBatch.OFFICE, SECRET_HOME, null, null)
         );
     }
 

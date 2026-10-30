@@ -113,6 +113,31 @@ class OrderingScenariosTest {
     }
 
     @Test
+    void officeTransferBeforeAnEarlierShiftChangeKeepsTheVersion7Shift() throws Exception {
+        post("/sync/events", hr("emp-shift", 1, "CREATE", "Ada", SampleHrBatch.OFFICE, "MORNING"));
+        JsonNode transfer = post("/sync/events", hr("emp-shift", 7, "UPDATE", "Ada", HYD, "NIGHT"));
+        assertThat(transfer.get(0).get("outcome").asText()).isEqualTo("APPLIED");
+
+        JsonNode earlier = post("/sync/events", hr("emp-shift", 6, "UPDATE", null, null, "DAY"));
+
+        assertThat(earlier.get(0).get("outcome").asText()).isEqualTo("IGNORED");
+        assertThat(earlier.get(0).get("reasonCode").asText()).isEqualTo("STALE_IGNORED");
+        StoredEmployee employee = stored("emp-shift");
+        assertThat(employee.officeCode()).isEqualTo(HYD);
+        assertThat(employee.shift()).isEqualTo("NIGHT");
+        assertThat(employee.hrVersion()).isEqualTo(7);
+    }
+
+    @Test
+    void malformedShiftIsRejected() throws Exception {
+        JsonNode rejected = post("/sync/events", hr("emp-bad-shift", 1, "CREATE", "Ada", SampleHrBatch.OFFICE, "bad!"));
+
+        assertThat(rejected.get(0).get("outcome").asText()).isEqualTo("REJECTED");
+        assertThat(rejected.get(0).get("reasonCode").asText()).isEqualTo("INVALID_SHIFT");
+        assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "emp-bad-shift")).isEmpty();
+    }
+
+    @Test
     void concurrentVersionsKeepTheHighestAndDoNotEscape() throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(50);
         CountDownLatch start = new CountDownLatch(1);
@@ -127,7 +152,7 @@ class OrderingScenariosTest {
                             "emp-race",
                             sourceVersion,
                             EventType.UPDATE,
-                            new EmployeeFields("v" + sourceVersion, null, null, null, null, null, null)
+                            new EmployeeFields("v" + sourceVersion, null, null, null, null, null, null, null)
                     )));
                 }));
             }
@@ -162,7 +187,7 @@ class OrderingScenariosTest {
                             "emp-twin",
                             1L,
                             EventType.CREATE,
-                            new EmployeeFields("Twin", "emp-twin@example.com", "+15550000001", "M1", SampleHrBatch.OFFICE, null, null)
+                            new EmployeeFields("Twin", "emp-twin@example.com", "+15550000001", "M1", SampleHrBatch.OFFICE, null, null, null)
                     )));
                 }));
             }
@@ -196,7 +221,7 @@ class OrderingScenariosTest {
                 "emp-own",
                 1L,
                 "UPDATE",
-                new SyncFieldsRequest("Stolen", "stolen@example.com", "not-a-phone", "X", "ZZZ", "Gate 4", "wheelchair")
+                new SyncFieldsRequest("Stolen", "stolen@example.com", "not-a-phone", "X", "ZZZ", "Gate 4", "wheelchair", "STOLEN")
         ));
         assertThat(transport.get(0).get("outcome").asText()).isEqualTo("APPLIED");
 
@@ -205,7 +230,7 @@ class OrderingScenariosTest {
                 "emp-own",
                 2L,
                 "UPDATE",
-                new SyncFieldsRequest("Ada Lovelace", null, null, null, null, "Home Lane", "none")
+                new SyncFieldsRequest("Ada Lovelace", null, null, null, null, "Home Lane", "none", null)
         ));
 
         assertThat(hr.get(0).get("outcome").asText()).isEqualTo("APPLIED");
@@ -216,6 +241,7 @@ class OrderingScenariosTest {
         assertThat(employee.hrVersion()).isEqualTo(2);
         assertThat(employee.transportVersion()).isEqualTo(1);
         assertThat(employee.email()).isEqualTo("emp-own@example.com");
+        assertThat(employee.shift()).isNull();
     }
 
     @Test
@@ -293,7 +319,7 @@ class OrderingScenariosTest {
     private StoredEmployee stored(String employeeId) {
         return jdbc.queryForObject(
                 """
-                        select name, email, phone, office_code, pickup_point, special_assistance,
+                        select name, email, phone, office_code, shift, pickup_point, special_assistance,
                                hr_version, transport_version, status, updated_at
                         from employee
                         where tenant_id = ? and employee_id = ?
@@ -303,6 +329,7 @@ class OrderingScenariosTest {
                         rs.getString("email"),
                         rs.getString("phone"),
                         rs.getString("office_code"),
+                        rs.getString("shift"),
                         rs.getString("pickup_point"),
                         rs.getString("special_assistance"),
                         rs.getLong("hr_version"),
@@ -326,12 +353,23 @@ class OrderingScenariosTest {
     }
 
     private static SyncEventRequest hr(String employeeId, long version, String type, String name, String office) {
+        return hr(employeeId, version, type, name, office, null);
+    }
+
+    private static SyncEventRequest hr(
+            String employeeId,
+            long version,
+            String type,
+            String name,
+            String office,
+            String shift
+    ) {
         return new SyncEventRequest(
                 SampleHrBatch.TENANT,
                 employeeId,
                 version,
                 type,
-                new SyncFieldsRequest(name, employeeId + "@example.com", "+15550000001", "M1", office, null, null)
+                new SyncFieldsRequest(name, employeeId + "@example.com", "+15550000001", "M1", office, null, null, shift)
         );
     }
 
@@ -345,6 +383,7 @@ class OrderingScenariosTest {
             String email,
             String phone,
             String officeCode,
+            String shift,
             String pickupPoint,
             String specialAssistance,
             long hrVersion,

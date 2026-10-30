@@ -7,7 +7,8 @@ public record EmployeeFields(
         String manager,
         String officeCode,
         String pickupPoint,
-        String specialAssistance
+        String specialAssistance,
+        String shift
 ) {
     public EmployeeFields {
         name = Text.trimToNull(name);
@@ -17,10 +18,11 @@ public record EmployeeFields(
         officeCode = Text.trimToNull(officeCode);
         pickupPoint = Text.trimToNull(pickupPoint);
         specialAssistance = Text.trimToNull(specialAssistance);
+        shift = Text.trimToNull(shift);
     }
 
     public static EmployeeFields empty() {
-        return new EmployeeFields(null, null, null, null, null, null, null);
+        return new EmployeeFields(null, null, null, null, null, null, null, null);
     }
 
     @Override

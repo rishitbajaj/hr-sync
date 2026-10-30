@@ -110,7 +110,7 @@ class BatchIngestTest {
                             "emp-after-mail",
                             2L,
                             EventType.CREATE,
-                            new EmployeeFields("Nia", "nia@leak.example", "+15550000032", "M1", SampleHrBatch.OFFICE, home, null)
+                            new EmployeeFields("Nia", "nia@leak.example", "+15550000032", "M1", SampleHrBatch.OFFICE, home, null, null)
                     )
             ));
 
@@ -139,6 +139,7 @@ class BatchIngestTest {
                 "+15550000001",
                 "M1",
                 SampleHrBatch.OFFICE,
+                null,
                 "Gate 4",
                 "wheelchair",
                 1,
@@ -152,7 +153,7 @@ class BatchIngestTest {
                 "emp-01",
                 2L,
                 EventType.UPDATE,
-                new EmployeeFields("Ada Lovelace", null, null, null, null, SampleHrBatch.HOME, "should-not-stick")
+                new EmployeeFields("Ada Lovelace", null, null, null, null, SampleHrBatch.HOME, "should-not-stick", null)
         )));
 
         HrEmployee stored = store.find(SampleHrBatch.TENANT, "emp-01").orElseThrow();
@@ -179,7 +180,7 @@ class BatchIngestTest {
                 employeeId,
                 version,
                 EventType.CREATE,
-                new EmployeeFields("Ada", email, phone, "M1", SampleHrBatch.OFFICE, null, null)
+                new EmployeeFields("Ada", email, phone, "M1", SampleHrBatch.OFFICE, null, null, null)
         );
     }
 

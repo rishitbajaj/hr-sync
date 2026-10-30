@@ -135,6 +135,7 @@ class SyncEventsHttpTest {
                             "M1",
                             SampleHrBatch.OFFICE,
                             null,
+                            null,
                             null
                     )
             ));

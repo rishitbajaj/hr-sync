@@ -39,6 +39,7 @@ final class SampleHrBatch {
                                 "M1",
                                 row.office(),
                                 row.pickup(),
+                                null,
                                 null
                         )
                 ))
@@ -59,6 +60,7 @@ final class SampleHrBatch {
                                 "M1",
                                 row.office(),
                                 row.pickup(),
+                                null,
                                 null
                         )
                 ))

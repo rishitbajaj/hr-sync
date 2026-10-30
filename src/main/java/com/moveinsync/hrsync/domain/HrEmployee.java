@@ -13,6 +13,7 @@ public final class HrEmployee {
     private String phone;
     private String manager;
     private String officeCode;
+    private String shift;
     private String pickupPoint;
     private String specialAssistance;
     private long hrVersion;
@@ -33,6 +34,7 @@ public final class HrEmployee {
         employee.phone = fields.phone();
         employee.manager = fields.manager();
         employee.officeCode = fields.officeCode();
+        employee.shift = fields.shift();
         employee.hrVersion = event.sourceVersion();
         employee.transportVersion = 0;
         employee.status = EmployeeStatus.ACTIVE;
@@ -49,6 +51,7 @@ public final class HrEmployee {
             String phone,
             String manager,
             String officeCode,
+            String shift,
             String pickupPoint,
             String specialAssistance,
             long hrVersion,
@@ -63,6 +66,7 @@ public final class HrEmployee {
         employee.phone = phone;
         employee.manager = manager;
         employee.officeCode = officeCode;
+        employee.shift = shift;
         employee.pickupPoint = pickupPoint;
         employee.specialAssistance = specialAssistance;
         employee.hrVersion = hrVersion;
@@ -88,6 +92,9 @@ public final class HrEmployee {
         }
         if (fields.officeCode() != null) {
             officeCode = fields.officeCode();
+        }
+        if (fields.shift() != null) {
+            shift = fields.shift();
         }
         hrVersion = event.sourceVersion();
         updatedAt = now;
@@ -129,6 +136,10 @@ public final class HrEmployee {
 
     public String officeCode() {
         return officeCode;
+    }
+
+    public String shift() {
+        return shift;
     }
 
     public String pickupPoint() {

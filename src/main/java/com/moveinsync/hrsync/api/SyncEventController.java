@@ -75,7 +75,8 @@ public class SyncEventController {
                 fields.manager(),
                 fields.officeCode(),
                 fields.pickupPoint(),
-                fields.specialAssistance()
+                fields.specialAssistance(),
+                fields.shift()
         );
     }
 }
