@@ -79,7 +79,7 @@ HR may write name, email, phone, manager, office, shift, `hr_version`, and statu
 
 | What fails | Caller sees | Recovery |
 | --- | --- | --- |
-| Database down or the pool times out | 503, `Retry-After: 3`, body `UNAVAILABLE` | The statement times out in about 3 seconds. A committed event is durable. Repeating it is `DUPLICATE` |
+| Database down, the pool cannot connect, or a statement times out during ingest | 503, `Retry-After: 3`. The body is the per-record `results` plus `correlationId`. The record that hit the database is `RETRYABLE_ERROR` / `DATABASE_UNAVAILABLE`. Records not yet attempted are `RETRYABLE_ERROR` / `NOT_PROCESSED`. Records whose transactions already committed are `APPLIED`. A validation failure already decided stays `REJECTED` | Resend the batch after `Retry-After`. An applied record comes back `DUPLICATE`. Each change is stored once. A read that is not an ingest is still 503 `UNAVAILABLE` |
 | App killed mid-ingest | Connection reset, or no body | The open transaction rolls back. A committed event stays, and the client may not have been told. The kill run recorded 290 more applies than the client saw |
 | App killed mid-reconciliation | No final body | Restart marks the `RUNNING` row `FAILED` / `INTERRUPTED`. Committed applies stay. A new run can start |
 | Booking client throws | The ingest already returned 200 | The outbox row stays `PENDING`, attempts increase, and that employee's later rows in the run are not published. After 5 attempts it is `FAILED` and blocks that employee. Replay or discard |

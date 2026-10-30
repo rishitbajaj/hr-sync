@@ -141,8 +141,8 @@ One app process and one Postgres. Offices exist before an HR event names them. T
 | --- | --- | --- | --- |
 | GET | `/health` | anyone | liveness |
 | POST | `/auth/token` | anyone | returns `token`, `expiresInSeconds` |
-| POST | `/sync/events` | admin | HR batch. Body `{"events":[...]}`. Response `{"results":[...]}` |
-| POST | `/sync/transport-events` | admin | transport batch. Type must be `UPDATE` |
+| POST | `/sync/events` | admin | HR batch. Body `{"events":[...]}`. `200` with `{"results":[...]}`, or `503` when a record is retryable |
+| POST | `/sync/transport-events` | admin | transport batch. Type must be `UPDATE`. Same outcomes as `/sync/events` |
 | GET | `/employees/{id}` | employee (self), admin, operator with `tenantId` | `tenantId`, `employeeId`, `status`, `officeCode`, `shift`. Placeholders are not returned |
 | POST | `/reconciliation/runs?tenantId=` | admin | `text/csv` export |
 | GET | `/reconciliation/runs/{id}?tenantId=` | admin or operator | run status |
@@ -152,6 +152,20 @@ One app process and one Postgres. Offices exist before an HR event names them. T
 | POST | `/outbox/{id}/discard?tenantId=` | operator | body `{"reason":"..."}`, failed row only |
 | GET | `/actuator/prometheus` | operator | `Accept: text/plain` |
 | POST, GET | `/demo/**` | anyone, demo profile only | trips, bookings, failure injection |
+
+Outcomes on both ingest paths:
+
+| Outcome | Reason | HTTP | What to do |
+| --- | --- | --- | --- |
+| `APPLIED` | omitted | 200 | The change is stored. Sending it again is `DUPLICATE` |
+| `REJECTED` | `INVALID_PHONE`, `INVALID_EMAIL`, `INVALID_SHIFT`, `UNKNOWN_OFFICE`, `MISSING_REQUIRED_FIELD` | 200 | Fix the record. The rest of the batch is still processed |
+| `REJECTED` | `APPLY_FAILED` | 200 | That record violated a data constraint. The rest of the batch is still processed. Retrying the same values fails the same way |
+| `IGNORED` | `DUPLICATE` | 200 | This version was already stored. Nothing new is written |
+| `IGNORED` | `STALE_IGNORED` | 200 | A newer version is already stored. Nothing new is written |
+| `RETRYABLE_ERROR` | `DATABASE_UNAVAILABLE` | 503, `Retry-After` | The database, a connection, or a statement timeout stopped this record. It was not stored. Send the batch again after the delay |
+| `RETRYABLE_ERROR` | `NOT_PROCESSED` | 503, `Retry-After` | The server stopped before this record because an earlier one could not reach the database. Send the batch again |
+
+If any record is `RETRYABLE_ERROR`, the status is 503 and the body also has `correlationId`. Records already `APPLIED` in that body stay applied.
 
 The role table is in `docs/SECURITY.md`. Conflict and idempotency rules are in `docs/CONFLICT_RULES.md`. Deactivation rules are in `docs/DEACTIVATION.md`. Operations and alerts are in `docs/OPERATIONS.md`. The claim stall is in `docs/OUTBOX_CLAIM.md`. The load harness is in `load/README.md`.
 
@@ -236,33 +250,9 @@ What can be stale: on the node that applied a change or a deactivation, that emp
 
 ## Error handling
 
-Every error body is `code`, `message`, and `correlationId`. It does not include a stack trace, SQL, a class name, or personal data. The statuses are validation `400`, malformed JSON `400`, unsupported media type `415`, method not allowed `405`, unknown route `404`, unauthenticated `401`, forbidden `403`, request too large `413`, conflict `409`, database unavailable or pool exhausted `503` with `Retry-After`, and any other failure `500` with the message `An unexpected error occurred`. Connection, statement, and socket timeouts default to about 3 seconds (`hr-sync.database.connection-timeout`, `hr-sync.database.statement-timeout`).
+An error body is `code`, `message`, and `correlationId`. It does not include a stack trace, SQL, a class name, or personal data. The statuses are validation `400`, malformed JSON `400`, unsupported media type `415`, method not allowed `405`, unknown route `404`, unauthenticated `401`, forbidden `403`, request too large `413`, conflict `409`, and any other failure `500` with the message `An unexpected error occurred`. A database failure on a read is `503` with `Retry-After` and that error body. A database failure during ingest is also `503` with `Retry-After`, and the body is the per-record results plus `correlationId` (`docs/DEMO.md`). Connection, statement, and socket timeouts default to about 3 seconds (`hr-sync.database.connection-timeout`, `hr-sync.database.statement-timeout`).
 
-A paused Postgres on a throwaway container (port 5436, app on 8086, so the audit stack on 5432 and 8080 was left alone) returned `503` in 3.094 seconds. After a warm `CREATE` of `emp-probe` at version 1 had already returned `200` (`time_total=0.381972`, outcome `APPLIED`), the same body was sent again:
-
-```bash
-docker pause hrsync-error-probe-pg
-curl -sS -D /tmp/paused-headers.txt -o /tmp/paused-body.txt \
-  -w 'http_code=%{http_code} time_total=%{time_total}\n' --max-time 20 \
-  -X POST http://localhost:8086/sync/events \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -H 'X-Correlation-Id: probe-paused' \
-  -d '{"events":[{"tenantId":"acme","employeeId":"emp-probe","sourceVersion":1,"type":"CREATE","fields":{"name":"Probe","email":"probe@example.com","phone":"+15550000001","manager":"M1","officeCode":"BLR","shift":"DAY"}}]}'
-docker unpause hrsync-error-probe-pg
-```
-
-While paused:
-
-```text
-HTTP/1.1 503
-Retry-After: 3
-X-Correlation-Id: probe-paused
-
-{"code":"UNAVAILABLE","message":"Database is unavailable","correlationId":"probe-paused"}
-http_code=503 time_total=3.094185
-```
-
-After `docker unpause`, the same ingest with `X-Correlation-Id: probe-recovered` returned `200` (`time_total=0.011950`) and `{"results":[{"tenantId":"acme","employeeId":"emp-probe","sourceVersion":1,"outcome":"IGNORED","reasonCode":"DUPLICATE"}]}`.
+A paused Postgres, with the app on port 8087 so the audit stack on 5432 and 8080 was left alone, returned `503` for `GET /employees/walk-missing` in 3.138 seconds (`Retry-After: 3`, body `UNAVAILABLE`). The three-create batch in `docs/DEMO.md` returned `503` in 3.247 seconds with `RETRYABLE_ERROR` results and stored nothing. The same batch after unpause returned `200` in 0.055 seconds and each employee was stored once.
 
 ## Load
 
@@ -379,7 +369,7 @@ A rerun of that kill command after the invariant change exited 0. Of 110,600 eve
 
 ## Verification
 
-`mvn -B test` on 2026-10-30: 186 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=3370 peakHeapBytes=85732640 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-30: 191 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2441 peakHeapBytes=85606984 maxHeapBytes=268435456`.
 
 ## Known limitations
 

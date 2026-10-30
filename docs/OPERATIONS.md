@@ -11,7 +11,8 @@ Timers publish histogram buckets and client-side p50, p95, and p99 gauges. Prefe
 | `ingest_applied_total` | counter | `reason=none`, `channel` | Ingest applied |
 | `ingest_stale_ignored_total` | counter | `reason`, `channel` | Older version ignored |
 | `ingest_duplicate_total` | counter | `reason`, `channel` | Already processed version |
-| `ingest_rejected_total` | counter | `reason`, `channel` | Validation or apply rejection |
+| `ingest_rejected_total` | counter | `reason`, `channel` | Validation or data-specific apply rejection |
+| `ingest_retryable_total` | counter | `reason`, `channel` | `DATABASE_UNAVAILABLE` or `NOT_PROCESSED`. The caller should resend |
 | `ingest_duration_seconds` | histogram | | Ingest batch time |
 | `reconciliation_duration_seconds` | histogram | | Reconciliation run or approve time |
 | `reconciliation_runs_total` | counter | `status` | Runs by final status |
@@ -65,6 +66,7 @@ Outbox thresholds are from the 2026-10-30 load on this machine (`VUS=8`, 60s, re
 | `outbox_publish_rate_rows` | 0 for 1 minute while `outbox_pending` is above 0. Idle is pending 0, which is not this alert. The highest ingest sample was 4,046 rows/s |
 | `outbox_failed` | Above 0. Every load sample was 0 |
 | `reconciliation_halted_total` | Any increase |
+| `ingest_retryable_total` | Any increase for 1 minute. One batch during a database blip is expected and should stop once the caller resends. A continued increase means Postgres or the pool is still not answering |
 | HTTP 5xx | More than 1% of `http_server_requests_seconds_count` for 5 minutes |
 | `auth_login_failures_total` | More than 20 per minute |
 
@@ -76,4 +78,4 @@ Outbox thresholds are from the 2026-10-30 load on this machine (`VUS=8`, 60s, re
 4. Replay one row: `POST /outbox/{id}/replay?tenantId={tenant}`.
 5. Discard one row when it must not be published: `POST /outbox/{id}/discard?tenantId={tenant}` with `{"reason":"..."}`. The reason is required. Only a failed row can be changed.
 6. A halted reconciliation: `GET /reconciliation/runs/{id}?tenantId={tenant}`. If the missing-row brake is accepted, `POST /reconciliation/runs/{id}/approve?tenantId={tenant}` as the operator.
-7. A `503` with `Retry-After` means the database or the pool did not answer inside the timeout (about 3 seconds). Check Postgres. After it answers again, repeat the call. The body stays `{"code":"UNAVAILABLE","message":"Database is unavailable","correlationId":"..."}`.
+7. A `503` with `Retry-After` means the database or the pool did not answer inside the timeout (about 3 seconds). Check Postgres. A read returns `{"code":"UNAVAILABLE","message":"Database is unavailable","correlationId":"..."}`. An ingest returns `results` and `correlationId`: `RETRYABLE_ERROR` / `DATABASE_UNAVAILABLE` for the record that hit the database, and `RETRYABLE_ERROR` / `NOT_PROCESSED` for the ones the server did not attempt. After Postgres answers, send the batch again. `ingest_retryable_total` counts those outcomes.
