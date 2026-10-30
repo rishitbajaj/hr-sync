@@ -12,6 +12,9 @@ public record ReconciliationRunResponse(
         int toDeactivate,
         int missingCount,
         int activeCount,
-        int exportRowCount
+        int exportRowCount,
+        Double missingRatio,
+        Double threshold,
+        String haltReason
 ) {
 }

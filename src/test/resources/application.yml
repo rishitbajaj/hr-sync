@@ -3,6 +3,12 @@ spring:
     scheduling:
       enabled: false
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
+
 hr-sync:
   outbox:
     poll-interval: 1h

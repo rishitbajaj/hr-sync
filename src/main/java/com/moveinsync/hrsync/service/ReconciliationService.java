@@ -6,6 +6,7 @@ import com.moveinsync.hrsync.domain.EmployeeFields;
 import com.moveinsync.hrsync.domain.EventType;
 import com.moveinsync.hrsync.domain.RosterHash;
 import com.moveinsync.hrsync.domain.SyncEvent;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -15,6 +16,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
@@ -34,6 +37,8 @@ import java.util.UUID;
 @Service
 public class ReconciliationService {
 
+    static final String HALT_REASON = "MISSING_RATIO_EXCEEDED";
+
     private static final Logger log = LoggerFactory.getLogger(ReconciliationService.class);
 
     private static final String ACTIVE = """
@@ -49,6 +54,7 @@ public class ReconciliationService {
     private final EmployeeChangeService changes;
     private final Clock clock;
     private final TransactionTemplate reads;
+    private final MeterRegistry meters;
 
     public ReconciliationService(
             JdbcTemplate jdbc,
@@ -57,7 +63,8 @@ public class ReconciliationService {
             SyncEventService syncEvents,
             EmployeeChangeService changes,
             Clock clock,
-            PlatformTransactionManager transactionManager
+            PlatformTransactionManager transactionManager,
+            MeterRegistry meters
     ) {
         this.jdbc = jdbc;
         this.settings = settings;
@@ -66,6 +73,7 @@ public class ReconciliationService {
         this.changes = changes;
         this.clock = clock;
         this.reads = new TransactionTemplate(transactionManager);
+        this.meters = meters;
     }
 
     public ReconciliationRunResponse run(InputStream csv) {
@@ -82,7 +90,8 @@ public class ReconciliationService {
         List<ReconciliationRunResponse> rows = jdbc.query(
                 """
                         select id, tenant_id, status, unchanged_count, create_count, update_count,
-                               deactivate_count, missing_count, active_employee_count, export_row_count
+                               deactivate_count, missing_count, active_employee_count, export_row_count,
+                               missing_ratio, threshold, halt_reason
                         from import_run
                         where id = ?
                         """,
@@ -126,7 +135,24 @@ public class ReconciliationService {
             Diff diff = dirty.isEmpty()
                     ? new Diff(unchanged, 0, 0, 0)
                     : classify(temp, scan.tenantId(), dirty, bucketCount, heads, unchanged);
-            finish(id, "COMPLETED", diff, activeCount, scan.rowCount());
+            if (exceedsMissingRatio(diff.toDeactivate(), activeCount)) {
+                finish(id, "HALTED", diff, activeCount, scan.rowCount(), HALT_REASON);
+                meters.counter("reconciliation.halted", "reason", HALT_REASON).increment();
+                ReconciliationRunResponse halted = get(id);
+                log.warn(
+                        "reconciliation halted runId={} tenantId={} missingCount={} activeCount={} ratio={} threshold={} reason={}",
+                        halted.id(),
+                        halted.tenantId(),
+                        halted.missingCount(),
+                        halted.activeCount(),
+                        halted.missingRatio(),
+                        halted.threshold(),
+                        halted.haltReason()
+                );
+                return halted;
+            }
+            deactivateMissing(scan.tenantId(), heads);
+            finish(id, "COMPLETED", diff, activeCount, scan.rowCount(), null);
             ReconciliationRunResponse response = get(id);
             log.info(
                     "reconciliation runId={} tenantId={} status={} unchanged={} toCreate={} toUpdate={} toDeactivate={} missingCount={} activeCount={} exportRowCount={}",
@@ -143,7 +169,7 @@ public class ReconciliationService {
             );
             return response;
         } catch (RuntimeException exception) {
-            finish(id, "FAILED", new Diff(unchanged, 0, 0, 0), activeCount, scan.rowCount());
+            finish(id, "FAILED", new Diff(unchanged, 0, 0, 0), activeCount, scan.rowCount(), null);
             log.warn(
                     "reconciliation failed runId={} tenantId={} error={}",
                     id,
@@ -194,13 +220,23 @@ public class ReconciliationService {
         }
         int missing = 0;
         for (Head head : heads.values()) {
-            if (head.seen) {
-                continue;
+            if (!head.seen) {
+                missing++;
             }
-            missing++;
-            changes.deactivateIfUnchanged(tenantId, head.employeeId, head.hrVersion);
         }
         return new Diff(unchanged + matched[0], creates[0], updates[0], missing);
+    }
+
+    private void deactivateMissing(String tenantId, Map<String, Head> heads) {
+        for (Head head : heads.values()) {
+            if (!head.seen) {
+                changes.deactivateIfUnchanged(tenantId, head.employeeId, head.hrVersion);
+            }
+        }
+    }
+
+    private boolean exceedsMissingRatio(int missing, int active) {
+        return active > 0 && (double) missing / active > settings.getMaxMissingRatio();
     }
 
     private void apply(RosterRow row, EventType type) {
@@ -300,7 +336,11 @@ public class ReconciliationService {
         return id;
     }
 
-    private void finish(UUID id, String status, Diff diff, int activeCount, int exportRowCount) {
+    private void finish(UUID id, String status, Diff diff, int activeCount, int exportRowCount, String haltReason) {
+        BigDecimal ratio = activeCount == 0
+                ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                : BigDecimal.valueOf(diff.toDeactivate()).divide(BigDecimal.valueOf(activeCount), 6, RoundingMode.HALF_UP);
+        BigDecimal threshold = BigDecimal.valueOf(settings.getMaxMissingRatio()).setScale(6, RoundingMode.HALF_UP);
         jdbc.update(
                 """
                         update import_run
@@ -312,7 +352,10 @@ public class ReconciliationService {
                             create_count = ?,
                             update_count = ?,
                             deactivate_count = ?,
-                            missing_count = ?
+                            missing_count = ?,
+                            missing_ratio = ?,
+                            threshold = ?,
+                            halt_reason = ?
                         where id = ?
                         """,
                 status,
@@ -324,6 +367,9 @@ public class ReconciliationService {
                 diff.toUpdate(),
                 diff.toDeactivate(),
                 diff.toDeactivate(),
+                ratio,
+                threshold,
+                haltReason,
                 id
         );
     }
@@ -339,8 +385,16 @@ public class ReconciliationService {
                 number(rs, "deactivate_count"),
                 number(rs, "missing_count"),
                 number(rs, "active_employee_count"),
-                number(rs, "export_row_count")
+                number(rs, "export_row_count"),
+                decimal(rs, "missing_ratio"),
+                decimal(rs, "threshold"),
+                rs.getString("halt_reason")
         );
+    }
+
+    private static Double decimal(ResultSet rs, String column) throws SQLException {
+        BigDecimal value = rs.getBigDecimal(column);
+        return value == null ? null : value.doubleValue();
     }
 
     private static int number(ResultSet rs, String column) throws SQLException {

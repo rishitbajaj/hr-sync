@@ -21,6 +21,15 @@ server:
   error:
     include-message: never
     include-binding-errors: never
+  tomcat:
+    max-http-form-post-size: -1
+    max-swallow-size: -1
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
 
 logging:
   level:
@@ -39,3 +48,4 @@ hr-sync:
     retry-max-delay: 30s
   reconciliation:
     bucket-count: 256
+    max-missing-ratio: 0.30
