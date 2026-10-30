@@ -18,6 +18,8 @@ Timers publish histogram buckets and client-side p50, p95, and p99 gauges. Prefe
 | `reconciliation_halted_total` | counter | `reason=MISSING_RATIO_EXCEEDED` | Runs stopped by the missing-row brake |
 | `outbox_published_total` | counter | | Outbox rows published |
 | `outbox_retries_total` | counter | | Outbox publish attempts that failed |
+| `outbox_publish_rate_rows` | gauge | | Rows per second in the last poller tick. An empty tick records 0 |
+| `outbox_claim_size_rows` | summary | | Rows claimed in one poll (`_count`, `_sum`, `_max`) |
 | `outbox_pending` | gauge | | Pending outbox rows |
 | `outbox_oldest_pending_seconds` | gauge | | Age of the oldest pending row. Zero when nothing is pending |
 | `outbox_failed` | gauge | | Failed outbox rows |
@@ -54,20 +56,21 @@ Result (cost=8.16..8.17 rows=1 width=32)
 
 ## Suggested alerts
 
-These are starting points, not measured production limits.
+Outbox thresholds are from the 2026-10-30 load on this machine (`VUS=8`, 60s, reseeded). The other rows were not remeasured.
 
 | Signal | Suggested threshold |
 | --- | --- |
-| `outbox_pending` | Higher than 15 minutes ago |
-| `outbox_oldest_pending_seconds` | Above 120 |
-| `outbox_failed` | Above 0 |
+| `outbox_pending` | Above 5,000 for 2 minutes. The 10s gauge peaked at 1,316 during ingest, 1,125 during contention, and 476 during mixed |
+| `outbox_oldest_pending_seconds` | Above 30. Healthy samples stayed at 0. The stalled claim reached 196s in a 60s contention run. A killed process reached 75s while it was down, then the queue cleared |
+| `outbox_publish_rate_rows` | 0 for 1 minute while `outbox_pending` is above 0. Idle is pending 0, which is not this alert. The highest ingest sample was 4,046 rows/s |
+| `outbox_failed` | Above 0. Every load sample was 0 |
 | `reconciliation_halted_total` | Any increase |
 | HTTP 5xx | More than 1% of `http_server_requests_seconds_count` for 5 minutes |
 | `auth_login_failures_total` | More than 20 per minute |
 
 ## 3 AM runbook
 
-1. Sign in as the operator and open `GET /actuator/prometheus`. Read `outbox_pending`, `outbox_oldest_pending_seconds`, `outbox_failed`, `reconciliation_halted_total`, and the 5xx rate.
+1. Sign in as the operator and open `GET /actuator/prometheus`. Read `outbox_pending`, `outbox_oldest_pending_seconds`, `outbox_publish_rate_rows`, `outbox_claim_size_rows`, `outbox_failed`, `reconciliation_halted_total`, and the 5xx rate.
 2. Take the `correlationId` from the error body or the `X-Correlation-Id` response header and find the same field in the JSON logs.
 3. Failed outbox rows: `GET /outbox/failed?tenantId={tenant}` as the operator.
 4. Replay one row: `POST /outbox/{id}/replay?tenantId={tenant}`.

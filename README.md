@@ -107,7 +107,7 @@ docker run --rm --network hrsync-load --env-file load/.env -e SCENARIO=ingest -e
 
 `./load/run.sh ingest` is that command plus CPU, `pg_stat_activity`, and actuator samples, then `load/invariants.py`. The ramp was `./load/run.sh ramp -e STAGE=15s -e RAMP_EXEC=ingest`. The four fixed runs were `./load/run.sh <scenario>` with `VUS=8`, `WARMUP=10s`, `DURATION=60s`, in the order reads, contention, mixed, ingest, on one database.
 
-Machine: WSL2 (`Linux 6.6.87.2-microsoft-standard-WSL2`), AMD Ryzen 7 7840HS (8 cores, 16 threads), 7,760,064 kB RAM, Docker 29.4.2, Compose v5.1.3, Temurin 21.0.13, PostgreSQL 16.15 (`postgres:16-alpine` in `hrsync-load-pg`). Measured on 2026-10-30. No code was changed to improve these numbers.
+Machine: WSL2 (`Linux 6.6.87.2-microsoft-standard-WSL2`), AMD Ryzen 7 7840HS (8 cores, 16 threads), 7,760,064 kB RAM, Docker 29.4.2, Compose v5.1.3, Temurin 21.0.13, PostgreSQL 16.15 (`postgres:16-alpine` in `hrsync-load-pg`). Measured on 2026-10-30. The ramp and the four runs below used the poller that claimed one row per employee.
 
 Hikari is left at its default. `hikaricp.connections.max` was 10 on every sample. Each event is its own transaction: `pg_stat_statements` for the 60s ingest counted 127,320 `BEGIN`s, 100,740 employee updates (mean 0.06 ms), 100,740 outbox inserts, and 100,740 `processed_event` inserts. A batch of 100 therefore holds one pool connection for the whole request.
 
@@ -174,6 +174,41 @@ That starts the ingest scenario, waits 25s, runs `docker kill hrsync-load-app`, 
 Of 110,600 events sent, 44,800 came back in a response and 65,800 did not (the requests after the kill). The responses add up: 33,920 applied + 4,160 stale + 4,480 duplicate + 2,240 rejected = 44,800. The database added 34,221 `processed_event` rows and 34,221 outbox rows, 301 more applies than the client was told about. Version mismatches were 0. Cross-tenant rows were 0. Every load employee still had a processed row.
 
 The 120s drain after restart left 25,665 pending (none failed) and an oldest age of 199s, so that check did not yet pass `PUBLISHED`. The gauge then fell from 23,365 pending to 0 in 377s. From the first post-restart sample (33,965 pending, oldest 81s) to pending 0 was 529s. The oldest age reached 571s on the sample before the queue emptied, then read 0. A second check after that returned pending 0, oldest 0, the same row counts, and no failures.
+
+### After the per-employee claim
+
+The stall was the claim. With eight employees, the ordering guard left eight claimable heads. The poll asked for 100 rows with hash and merge joins turned off, the nested-loop anti-join exceeded the 3 second statement timeout, and the transaction rolled back. Pending stayed put. There were no `FAILED` rows and no blocked head. The plans and the frozen `outbox.published` counter are in `docs/OUTBOX_CLAIM.md`.
+
+The poller now locks each employee's oldest pending row (`FOR UPDATE SKIP LOCKED`) and, in that same transaction, the following pending rows of that employee up to `employee-cap`, publishes that run in id order, and marks it with one `id = ANY(...)` update. A failure stops the rest of that employee's run. Other employees continue. A full batch is polled again immediately until `tick-budget` is spent. Another poller still cannot publish a later row while an earlier one is pending or in flight.
+
+Defaults: the head lookup averaged 1.81 ms during the ingest minute below, a full batch is 400 rows, and two publisher threads fit the pool of 10.
+
+| Setting | Value |
+| --- | --- |
+| `poll-interval` | 1s |
+| `batch-size` | 400 |
+| `employee-cap` | 100 |
+| `publisher-threads` | 2 |
+| `tick-budget` | 3s |
+
+The same machine, image rebuilt from that poller, `VUS=8`, `WARMUP=10s`, `DURATION=60s`. Each scenario was reseeded with `python3 load/generate.py` first, so a peak is that scenario's own rows. `./load/run.sh` used `DRAIN_TIMEOUT=120`. The kill command was the same as above. `outbox.pending` and `outbox.oldest.pending.seconds` are sampled every 10s, so the peak is the highest of those samples.
+
+| Scenario | Before peak pending | Before oldest | Before drain | After peak pending | After oldest | After drain |
+| --- | --- | --- | --- | --- | --- | --- |
+| Ingest | 234,256 | 395s | stalled at 21.9s | 1,316 | 0s | 0.344s |
+| Contention | 85,672 | 196s | still 85,672 after 120s | 1,125 | 0s | 0.334s |
+| Mixed | 133,516 | 292s | stalled at 21.6s | 476 | 0s | 0.336s |
+| Kill under load | 25,665 after 120s | 571s | 529s to pending 0 | 16,276 | 75s | 0.329s, pending 0 |
+
+Before mixed and ingest include the unpublished rows of the earlier scenarios. Before contention followed the reads run, which had left nothing pending. After, every outbox row was `PUBLISHED` (`pending` 0, `failed` 0, `notPublished` 0). The oldest-age gauge stores whole seconds, and every sample during ingest, contention, and mixed was 0 while pending was above 0, so those rows were under a second old at the sample. The kill's 75s is the age while the process was down. At 21:17:33 that scrape still showed 16,276 pending; the database check at 21:17:36 found 0.
+
+Ingest throughput fell. Steady window, error rate 0 both times: 19.07 req/s (1,907 events/s, p50 418.7 ms, p95 454.5 ms, p99 604.4 ms) before, and 15.87 req/s (1,587 events/s, p50 487.1 ms, p95 658.0 ms, p99 1,204.6 ms) after. 952 steady requests in 60s. Applied 84,920 of 112,800 sent. Docker CPU peaked at 391% for the app and 164% for Postgres (before: 102% and 254%). Hikari max stayed 10, active connections hit 10, and none were waiting. Contention steady rate was 11.23 req/s (674 requests, p50 675.4 ms) against 14.27 req/s before. Mixed warm reads were 6,029 req/s, p50 0.403 ms, against 8,124 req/s and 0.357 ms before.
+
+On the ingest minute, `pg_stat_statements` showed the head lookup at mean 1.81 ms (232 calls), the per-employee run select at mean 0.44 ms (3,184 calls), and the `id = ANY` update at mean 0.30 ms. Claim size for that minute was 84,920 rows over 224 claims (mean 379, max 401). The highest `outbox.publish.rate` sample was 4,046 rows/s. That gauge is the last tick's rows divided by the tick's wall time, so an empty tick records 0.
+
+Saved Prometheus scrapes for these runs were 33–46 KB and included `outbox_published_total`, `outbox_claim_size_rows`, `outbox_publish_rate_rows`, Hikari, and JVM memory. None was `# EOF`.
+
+The kill check added 31,679 `processed_event` rows and 31,679 outbox rows. The client was told about 31,520 applies (159 commits it did not see). Version mismatches were 0. Cross-tenant rows were 0. The invariant script still exited 1: k6 reported 8 interrupted iterations, 800 events counted as attempted and neither classified nor an HTTP failure (116,500 attempted, 41,600 classified, 74,100 HTTP failures). The outbox rows from that run were `PUBLISHED`.
 
 ## Verification
 
