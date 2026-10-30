@@ -113,7 +113,7 @@ class OutboxPollerTest {
 
     @Test
     void appliedChangeWritesOneOutboxRowAndNoOpsWriteNone() {
-        assertThat(indexDefinition()).containsIgnoringCase("where (published_at is null)");
+        assertThat(indexDefinition()).containsIgnoringCase("where ((status)::text = 'PENDING'::text)");
 
         IngestResult created = apply(create("emp-box", 1, "Ada"));
         IngestResult renamed = apply(rename("emp-box", 3, "Ada Lovelace"));
@@ -305,6 +305,48 @@ class OutboxPollerTest {
                     employeeId
             );
             assertThat(order).containsExactlyElementsOf(expected);
+        }
+    }
+
+    @Test
+    void aLaterVersionStaysUnclaimedWhileItsEarlierVersionIsInFlight() throws Exception {
+        apply(create("emp-inflight", 1, "Ada"));
+        apply(rename("emp-inflight", 2, "Ada Lovelace"));
+        List<Long> ids = outboxIds("emp-inflight");
+        assertThat(ids).hasSize(2);
+        long earlier = ids.get(0);
+        long later = ids.get(1);
+
+        CountDownLatch versionOneHeld = new CountDownLatch(1);
+        CountDownLatch releaseVersionOne = new CountDownLatch(1);
+        publisher.setListener(notice -> {
+            if (notice.eventId() == earlier) {
+                versionOneHeld.countDown();
+                await(releaseVersionOne);
+            }
+        });
+
+        OutboxPoller first = newPoller();
+        OutboxPoller second = newPoller();
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<Integer> held = pool.submit(() -> first.poll(1));
+            assertThat(versionOneHeld.await(20, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(second.poll(1)).isZero();
+            assertThat(publisher.published()).extracting(ChangeNotice::eventId).containsExactly(earlier);
+            assertThat(statusOf(later)).isEqualTo("PENDING");
+
+            releaseVersionOne.countDown();
+            assertThat(held.get(20, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(statusOf(earlier)).isEqualTo("PUBLISHED");
+
+            assertThat(second.poll(1)).isEqualTo(1);
+            assertThat(publisher.published()).extracting(ChangeNotice::eventId).containsExactly(earlier, later);
+            assertThat(statusOf(later)).isEqualTo("PUBLISHED");
+        } finally {
+            releaseVersionOne.countDown();
+            pool.shutdownNow();
         }
     }
 
@@ -545,6 +587,10 @@ class OutboxPollerTest {
         );
     }
 
+    private String statusOf(long id) {
+        return jdbc.queryForObject("select status from outbox where id = ?", String.class, id);
+    }
+
     private String outboxStatus(String employeeId) {
         return jdbc.queryForObject(
                 "select status from outbox where tenant_id = ? and aggregate_id = ?",
@@ -589,7 +635,7 @@ class OutboxPollerTest {
         return jdbc.queryForObject(
                 """
                         select indexdef from pg_indexes
-                        where schemaname = 'public' and indexname = 'idx_outbox_unpublished_id'
+                        where schemaname = 'public' and indexname = 'idx_outbox_pending_aggregate'
                         """,
                 String.class
         );

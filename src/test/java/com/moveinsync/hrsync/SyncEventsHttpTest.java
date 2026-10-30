@@ -8,11 +8,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.api.SyncBatchRequest;
 import com.moveinsync.hrsync.api.SyncEventRequest;
 import com.moveinsync.hrsync.api.SyncFieldsRequest;
+import com.moveinsync.hrsync.domain.EmployeeFields;
 import com.moveinsync.hrsync.domain.EmployeeStatus;
+import com.moveinsync.hrsync.domain.EventType;
+import com.moveinsync.hrsync.domain.IngestResult;
+import com.moveinsync.hrsync.domain.Outcome;
+import com.moveinsync.hrsync.domain.ReasonCode;
+import com.moveinsync.hrsync.domain.SyncEvent;
 import com.moveinsync.hrsync.repo.EmployeeEntity;
 import com.moveinsync.hrsync.repo.EmployeeRepository;
 import com.moveinsync.hrsync.repo.OfficeEntity;
 import com.moveinsync.hrsync.repo.OfficeRepository;
+import com.moveinsync.hrsync.service.SyncEventService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -25,6 +32,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -54,6 +63,12 @@ class SyncEventsHttpTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private SyncEventService syncEvents;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @BeforeEach
     void seedOffice() {
@@ -165,6 +180,52 @@ class SyncEventsHttpTest {
         }
         for (int index = 1; index <= 3; index++) {
             assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "row-" + index)).isPresent();
+        }
+    }
+
+    @Test
+    void aFailedRecordInsideAnOuterTransactionDoesNotRollBackItsNeighbors() {
+        List<SyncEvent> events = new ArrayList<>();
+        for (int index = 1; index <= 10; index++) {
+            String name = index == 4 ? "N".repeat(250) : "Person " + index;
+            String phoneSuffix = index < 10 ? "0" + index : Integer.toString(index);
+            events.add(new SyncEvent(
+                    SampleHrBatch.TENANT,
+                    "outer-" + index,
+                    (long) index,
+                    EventType.CREATE,
+                    new EmployeeFields(
+                            name,
+                            "outer-" + index + "@leak.example",
+                            "+155500000" + phoneSuffix,
+                            "M1",
+                            SampleHrBatch.OFFICE,
+                            null,
+                            null,
+                            null
+                    )
+            ));
+        }
+
+        TransactionTemplate outer = new TransactionTemplate(transactionManager);
+        List<IngestResult> results = outer.execute(status -> syncEvents.ingest(events));
+
+        assertThat(results).hasSize(10);
+        assertThat(results.get(3).employeeId()).isEqualTo("outer-4");
+        assertThat(results.get(3).outcome()).isEqualTo(Outcome.REJECTED);
+        assertThat(results.get(3).reasonCode()).isEqualTo(ReasonCode.APPLY_FAILED);
+        for (int index = 0; index < 10; index++) {
+            if (index == 3) {
+                continue;
+            }
+            assertThat(results.get(index).outcome()).isEqualTo(Outcome.APPLIED);
+        }
+        assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "outer-4")).isEmpty();
+        for (int index = 1; index <= 10; index++) {
+            if (index == 4) {
+                continue;
+            }
+            assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "outer-" + index)).isPresent();
         }
     }
 

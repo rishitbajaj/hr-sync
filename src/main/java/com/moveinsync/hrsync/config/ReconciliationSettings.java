@@ -9,7 +9,7 @@ public class ReconciliationSettings {
 
     private double maxMissingRatio = 0.30;
 
-    private String operatorPassword = "change-me";
+    private String operatorPassword;
 
     public int getBucketCount() {
         return bucketCount;

@@ -10,6 +10,7 @@ import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.SyncEvent;
 import com.moveinsync.hrsync.repo.OfficeEntity;
 import com.moveinsync.hrsync.repo.OfficeRepository;
+import com.moveinsync.hrsync.service.InterruptedRuns;
 import com.moveinsync.hrsync.service.ReconciliationHooks;
 import com.moveinsync.hrsync.service.SyncEventService;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -42,6 +43,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -78,6 +82,9 @@ class ReconciliationRunTest {
     private ReconciliationSettings settings;
 
     @Autowired
+    private InterruptedRuns interruptedRuns;
+
+    @Autowired
     private MeterRegistry meters;
 
     @AfterEach
@@ -104,7 +111,7 @@ class ReconciliationRunTest {
 
         List<Stored> before = stored(tenant);
         long outboxBefore = outboxCount(tenant);
-        JsonNode run = postCsv(csv(tenant, before.stream().filter(row -> "ACTIVE".equals(row.status())).toList()));
+        JsonNode run = postCsv(tenant, csv(tenant, before.stream().filter(row -> "ACTIVE".equals(row.status())).toList()));
 
         assertThat(run.get("status").asText()).isEqualTo("COMPLETED");
         assertThat(run.get("unchanged").asInt()).isEqualTo(3);
@@ -118,7 +125,7 @@ class ReconciliationRunTest {
         assertThat(outboxCount(tenant)).isEqualTo(outboxBefore);
         assertThat(status(tenant, "emp-ghost")).isEqualTo("PLACEHOLDER");
 
-        JsonNode fetched = getRun(run.get("id").asText());
+        JsonNode fetched = getRun(tenant, run.get("id").asText());
         assertThat(fetched.get("unchanged").asInt()).isEqualTo(3);
         assertThat(fetched.get("missingCount").asInt()).isZero();
     }
@@ -177,11 +184,12 @@ class ReconciliationRunTest {
                 null
         ));
 
-        JsonNode run = postCsv(csv(tenant, rows));
+        JsonNode run = postCsv(tenant, csv(tenant, rows));
 
         assertThat(run.get("unchanged").asInt()).isEqualTo(1);
         assertThat(run.get("toCreate").asInt()).isEqualTo(1);
-        assertThat(run.get("toUpdate").asInt()).isEqualTo(2);
+        assertThat(run.get("toUpdate").asInt()).isEqualTo(1);
+        assertThat(run.get("rejected").asInt()).isZero();
         assertThat(run.get("toDeactivate").asInt()).isEqualTo(1);
         assertThat(run.get("missingCount").asInt()).isEqualTo(1);
         assertThat(run.get("activeCount").asInt()).isEqualTo(4);
@@ -238,7 +246,7 @@ class ReconciliationRunTest {
                 new EmployeeFields("Live Winner", null, null, null, null, null, null, null)
         ))).get(0).outcome()).isEqualTo(Outcome.APPLIED));
 
-        JsonNode run = postCsv(csv(tenant, List.of(
+        JsonNode run = postCsv(tenant, csv(tenant, List.of(
                 find(tenant, "emp-stay"),
                 find(tenant, "emp-stay-2"),
                 find(tenant, "emp-stay-3"),
@@ -249,7 +257,7 @@ class ReconciliationRunTest {
         assertThat(run.get("unchanged").asInt()).isEqualTo(4);
         assertThat(run.get("toCreate").asInt()).isZero();
         assertThat(run.get("toUpdate").asInt()).isZero();
-        assertThat(run.get("toDeactivate").asInt()).isEqualTo(1);
+        assertThat(run.get("toDeactivate").asInt()).isZero();
         assertThat(run.get("missingCount").asInt()).isEqualTo(1);
         assertThat(run.get("activeCount").asInt()).isEqualTo(5);
 
@@ -282,7 +290,7 @@ class ReconciliationRunTest {
         seedActive(tenant, 200_000);
 
         double before = meters.counter("reconciliation.halted", "reason", "MISSING_RATIO_EXCEEDED").count();
-        JsonNode run = postCsv(cutoffCsv(tenant, 120_000));
+        JsonNode run = postCsv(tenant, cutoffCsv(tenant, 120_000));
 
         assertThat(run.get("status").asText()).isEqualTo("HALTED");
         assertThat(run.get("missingCount").asInt()).isEqualTo(80_000);
@@ -291,7 +299,7 @@ class ReconciliationRunTest {
         assertThat(run.get("unchanged").asInt()).isEqualTo(120_000);
         assertThat(run.get("toCreate").asInt()).isZero();
         assertThat(run.get("toUpdate").asInt()).isZero();
-        assertThat(run.get("toDeactivate").asInt()).isEqualTo(80_000);
+        assertThat(run.get("toDeactivate").asInt()).isZero();
         assertThat(run.get("missingRatio").asDouble()).isCloseTo(0.40, within(0.000001));
         assertThat(run.get("threshold").asDouble()).isCloseTo(0.30, within(0.000001));
         assertThat(run.get("haltReason").asText()).isEqualTo("MISSING_RATIO_EXCEEDED");
@@ -302,7 +310,7 @@ class ReconciliationRunTest {
         assertThat(output.getOut()).contains("reason=MISSING_RATIO_EXCEEDED").contains("missingCount=80000");
         assertThat(output.getOut()).doesNotContain("Pat").doesNotContain("@example.com");
 
-        JsonNode fetched = getRun(run.get("id").asText());
+        JsonNode fetched = getRun(tenant, run.get("id").asText());
         assertThat(fetched.get("missingCount").asInt()).isEqualTo(80_000);
         assertThat(fetched.get("status").asText()).isEqualTo("HALTED");
     }
@@ -319,7 +327,7 @@ class ReconciliationRunTest {
                 EventType.UPDATE,
                 fields("emp-ghost", "Ghost Name")
         ))).get(0).outcome()).isEqualTo(Outcome.APPLIED);
-        JsonNode halted = postCsv(csv(strict, exportFirst(strict, 8)));
+        JsonNode halted = postCsv(strict, csv(strict, exportFirst(strict, 8)));
         assertThat(halted.get("status").asText()).isEqualTo("HALTED");
         assertThat(halted.get("missingCount").asInt()).isEqualTo(2);
         assertThat(halted.get("activeCount").asInt()).isEqualTo(10);
@@ -339,7 +347,7 @@ class ReconciliationRunTest {
         settings.setMaxMissingRatio(0.50);
         String loose = "recon-loose";
         seedRoster(loose, 10);
-        JsonNode applied = postCsv(csv(loose, exportFirst(loose, 8)));
+        JsonNode applied = postCsv(loose, csv(loose, exportFirst(loose, 8)));
         assertThat(applied.get("status").asText()).isEqualTo("COMPLETED");
         assertThat(applied.get("missingCount").asInt()).isEqualTo(2);
         assertThat(applied.get("activeCount").asInt()).isEqualTo(10);
@@ -355,7 +363,7 @@ class ReconciliationRunTest {
         settings.setMaxMissingRatio(0.10);
         String tenant = "recon-approve";
         seedRoster(tenant, 4);
-        JsonNode halted = postCsv(csv(tenant, exportFirst(tenant, 2)));
+        JsonNode halted = postCsv(tenant, csv(tenant, exportFirst(tenant, 2)));
         assertThat(halted.get("status").asText()).isEqualTo("HALTED");
         assertThat(halted.get("missingCount").asInt()).isEqualTo(2);
         String url = "/reconciliation/runs/" + halted.get("id").asText() + "/approve";
@@ -398,25 +406,220 @@ class ReconciliationRunTest {
         assertThat(deactivated(tenant)).isEqualTo(1);
     }
 
-    private JsonNode postCsv(byte[] csv) throws Exception {
+    @Test
+    void aSecondRunForTheSameTenantIsRejectedWhileTheFirstIsRunning() throws Exception {
+        String tenant = "recon-lock";
+        seedRoster(tenant, 4);
+        byte[] body = csv(tenant, exportFirst(tenant, 3)).getBytes(StandardCharsets.UTF_8);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        hooks.setBeforeApply(() -> {
+            entered.countDown();
+            try {
+                if (!release.await(30, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("timed out waiting to finish the first reconciliation");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(exception);
+            }
+        });
+        AtomicReference<ResponseEntity<String>> first = new AtomicReference<>();
+        AtomicReference<Exception> failure = new AtomicReference<>();
+        Thread runner = new Thread(() -> {
+            try {
+                first.set(postRaw(tenant, body));
+            } catch (Exception exception) {
+                failure.set(exception);
+            }
+        });
+        runner.start();
+        try {
+            assertThat(entered.await(30, TimeUnit.SECONDS)).isTrue();
+            ResponseEntity<String> second = postRaw(tenant, body);
+            assertThat(second.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            assertThat(second.getBody()).contains("already running");
+            assertThat(second.getBody()).doesNotContain("@example.com").doesNotContain("Person");
+        } finally {
+            release.countDown();
+            runner.join(30_000);
+        }
+        assertThat(failure.get()).isNull();
+        assertThat(first.get().getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode completed = objectMapper.readTree(first.get().getBody());
+        assertThat(completed.get("status").asText()).isEqualTo("COMPLETED");
+        assertThat(completed.get("toDeactivate").asInt()).isEqualTo(1);
+        assertThat(deactivated(tenant)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "select count(*) from import_run where tenant_id = ?",
+                Long.class,
+                tenant
+        )).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "select count(*) from outbox where tenant_id = ? and event_type = 'DEACTIVATE'",
+                Long.class,
+                tenant
+        )).isEqualTo(1);
+    }
+
+    @Test
+    void restartMarksAnInterruptedRunFailedAndANewRunWorks() throws Exception {
+        String tenant = "recon-interrupt";
+        saveOffice(tenant);
+        create(tenant, "emp-1", 1, "Pat");
+        UUID id = UUID.randomUUID();
+        jdbc.update(
+                "insert into import_run (id, tenant_id, status, started_at) values (?, ?, 'RUNNING', ?)",
+                id,
+                tenant,
+                Timestamp.from(Instant.parse("2026-10-30T00:00:00Z"))
+        );
+
+        interruptedRuns.markInterrupted();
+
+        JsonNode failed = getRun(tenant, id.toString());
+        assertThat(failed.get("status").asText()).isEqualTo("FAILED");
+        assertThat(failed.get("haltReason").asText()).isEqualTo("INTERRUPTED");
+        JsonNode again = postCsv(tenant, csv(tenant, stored(tenant)));
+        assertThat(again.get("status").asText()).isEqualTo("COMPLETED");
+        assertThat(status(tenant, "emp-1")).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void aFileForAnUnknownTenantReportsZeroCreates() throws Exception {
+        String tenant = "unknown-co";
+        String csv = """
+                tenantId,employeeId,sourceVersion,name,email,phone,managerId,officeCode,shift
+                unknown-co,emp-1,1,Secret Name,secret@leak.example,+15550000001,M1,BLR,DAY
+                """;
+        JsonNode run = postCsv(tenant, csv);
+        assertThat(run.get("status").asText()).isEqualTo("COMPLETED");
+        assertThat(run.get("toCreate").asInt()).isZero();
+        assertThat(run.get("rejected").asInt()).isEqualTo(1);
+        assertThat(run.get("rejectedByReason").get("UNKNOWN_OFFICE").asInt()).isEqualTo(1);
+        assertThat(run.get("rejections")).hasSize(1);
+        assertThat(run.get("rejections").get(0).get("employeeId").asText()).isEqualTo("emp-1");
+        assertThat(run.get("rejections").get(0).get("reason").asText()).isEqualTo("UNKNOWN_OFFICE");
+        assertThat(run.toString()).doesNotContain("Secret Name").doesNotContain("secret@leak.example");
+        assertThat(jdbc.queryForObject(
+                "select count(*) from employee where tenant_id = ?",
+                Long.class,
+                tenant
+        )).isZero();
+    }
+
+    @Test
+    void aFileContainingAnotherTenantIsRejected() throws Exception {
+        String csv = """
+                tenantId,employeeId,sourceVersion,name,email,phone,managerId,officeCode,shift
+                acme,emp-1,1,Secret Name,secret@leak.example,+15550000001,M1,BLR,DAY
+                other,emp-2,1,Secret Name,secret@leak.example,+15550000001,M1,BLR,DAY
+                """;
+        ResponseEntity<String> response = postRaw("acme", csv.getBytes(StandardCharsets.UTF_8));
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).contains("different tenant");
+        assertThat(response.getBody()).doesNotContain("Secret Name").doesNotContain("secret@leak.example");
+        assertThat(jdbc.queryForObject(
+                "select count(*) from employee where tenant_id in ('acme', 'other')",
+                Long.class
+        )).isZero();
+    }
+
+    @Test
+    void duplicateEmployeeIdsInOneExportAreRejected() throws Exception {
+        saveOffice("recon-dups");
+        String csv = """
+                tenantId,employeeId,sourceVersion,name,email,phone,managerId,officeCode,shift
+                recon-dups,emp-1,1,Secret Name,secret@leak.example,+15550000001,M1,BLR,DAY
+                recon-dups,emp-1,2,Secret Name,secret@leak.example,+15550000001,M1,BLR,DAY
+                recon-dups,emp-1,3,Secret Name,secret@leak.example,+15550000001,M1,BLR,DAY
+                """;
+        ResponseEntity<String> response = postRaw("recon-dups", csv.getBytes(StandardCharsets.UTF_8));
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).contains("1 duplicate employee id");
+        assertThat(response.getBody()).doesNotContain("Secret Name").doesNotContain("secret@leak.example");
+        assertThat(jdbc.queryForObject(
+                "select count(*) from employee where tenant_id = ?",
+                Long.class,
+                "recon-dups"
+        )).isZero();
+        assertThat(jdbc.queryForObject(
+                "select status from import_run where tenant_id = ?",
+                String.class,
+                "recon-dups"
+        )).isEqualTo("FAILED");
+    }
+
+    private ResponseEntity<String> postRaw(String tenant, byte[] csv) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.parseMediaType("text/csv"));
-        ResponseEntity<String> response = restTemplate.postForEntity(
-                "/reconciliation/runs",
+        return restTemplate.postForEntity(
+                "/reconciliation/runs?tenantId=" + tenant,
                 new HttpEntity<>(csv, headers),
                 String.class
         );
+    }
+
+    private JsonNode postCsv(String tenant, byte[] csv) throws Exception {
+        ResponseEntity<String> response = postRaw(tenant, csv);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).doesNotContain("@example.com", "Nola", "Gate 9", "Live Winner", "Same, Person");
         return objectMapper.readTree(response.getBody());
     }
 
-    private JsonNode postCsv(String csv) throws Exception {
-        return postCsv(csv.getBytes(StandardCharsets.UTF_8));
+    private JsonNode postCsv(String tenant, String csv) throws Exception {
+        return postCsv(tenant, csv.getBytes(StandardCharsets.UTF_8));
     }
 
-    private JsonNode getRun(String id) throws Exception {
-        ResponseEntity<String> response = restTemplate.getForEntity("/reconciliation/runs/" + id, String.class);
+    @Test
+    void aRunIsVisibleOnlyForItsTenant() throws Exception {
+        String tenant = "recon-scope";
+        saveOffice(tenant);
+        create(tenant, "emp-1", 1, "Pat");
+        create(tenant, "emp-2", 1, "Ada");
+
+        JsonNode run = postCsv(tenant, csv(tenant, List.of(find(tenant, "emp-1"))));
+        assertThat(run.get("status").asText()).isEqualTo("HALTED");
+
+        JsonNode fetched = getRun(tenant, run.get("id").asText());
+        assertThat(fetched.get("tenantId").asText()).isEqualTo(tenant);
+        assertThat(fetched.get("status").asText()).isEqualTo("HALTED");
+
+        ResponseEntity<String> otherTenant = restTemplate.getForEntity(
+                "/reconciliation/runs/" + run.get("id").asText() + "?tenantId=other-co",
+                String.class
+        );
+        assertThat(otherTenant.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(otherTenant.getBody()).doesNotContain("Pat").doesNotContain("Ada").doesNotContain("@example.com");
+
+        ResponseEntity<String> missingTenant = restTemplate.getForEntity(
+                "/reconciliation/runs/" + run.get("id").asText(),
+                String.class
+        );
+        assertThat(missingTenant.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(missingTenant.getBody()).contains("tenantId is required");
+        assertThat(missingTenant.getBody()).doesNotContain("Pat").doesNotContain("Ada");
+
+        UUID runId = UUID.fromString(run.get("id").asText());
+        assertThat(jdbc.queryForObject(
+                "select count(*) from import_run_deactivation where run_id = ? and tenant_id = ?",
+                Long.class,
+                runId,
+                tenant
+        )).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "select employee_id from import_run_deactivation where tenant_id = ? and run_id = ?",
+                String.class,
+                tenant,
+                runId
+        )).isEqualTo("emp-2");
+    }
+
+    private JsonNode getRun(String tenant, String id) throws Exception {
+        ResponseEntity<String> response = restTemplate.getForEntity(
+                "/reconciliation/runs/" + id + "?tenantId=" + tenant,
+                String.class
+        );
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).doesNotContain("@example.com", "Nola", "Gate 9");
         return objectMapper.readTree(response.getBody());

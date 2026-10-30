@@ -374,8 +374,11 @@ class OrderingScenariosTest {
     }
 
     private static void assertNoOp(JsonNode result) {
+        // A replay of an applied version is DUPLICATE because processed_event already holds
+        // that tenant, employee, channel, and source version. STALE_IGNORED is a version
+        // that was never applied and is not newer than the stored channel version.
         assertThat(result.get("outcome").asText()).isEqualTo("IGNORED");
-        assertThat(result.get("reasonCode").asText()).isIn("DUPLICATE", "STALE_IGNORED");
+        assertThat(result.get("reasonCode").asText()).isEqualTo("DUPLICATE");
     }
 
     private record StoredEmployee(

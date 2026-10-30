@@ -132,7 +132,7 @@ class ReconciliationBenchmarkTest {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.parseMediaType("text/csv"));
         ResponseEntity<String> response = restTemplate.postForEntity(
-                "/reconciliation/runs",
+                "/reconciliation/runs?tenantId=" + TENANT,
                 new HttpEntity<>(new FileSystemResource(csv), headers),
                 String.class
         );

@@ -30,7 +30,7 @@ public class OutboxPoller {
             select o.id, o.tenant_id, o.aggregate_id, o.event_type, o.payload::text as payload, o.attempts
             from outbox o
             where o.status = 'PENDING'
-              and (o.next_attempt_at is null or o.next_attempt_at <= ?)
+              and o.next_attempt_at <= ?
               and not exists (
                   select 1
                   from outbox earlier
@@ -80,6 +80,10 @@ public class OutboxPoller {
     }
 
     private int deliver(int batchSize) {
+        // A hash anti-join would read every pending row before LIMIT. Nested-loop probes
+        // use idx_outbox_pending_id and idx_outbox_pending_aggregate and stop after the batch.
+        jdbc.execute("set local enable_hashjoin = off");
+        jdbc.execute("set local enable_mergejoin = off");
         List<Claimed> claimed = jdbc.query(
                 CLAIM,
                 (rs, row) -> mapClaim(rs),

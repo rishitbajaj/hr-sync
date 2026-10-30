@@ -68,8 +68,8 @@ public class EmployeeChangeService implements ChangeStore {
             """;
 
     private static final String INSERT_OUTBOX = """
-            insert into outbox (tenant_id, aggregate_id, event_type, payload, created_at)
-            values (?, ?, ?, cast(? as jsonb), ?)
+            insert into outbox (tenant_id, aggregate_id, event_type, payload, created_at, next_attempt_at)
+            values (?, ?, ?, cast(? as jsonb), ?, ?)
             """;
 
     private final EmployeeChangeApplier applier;
@@ -244,13 +244,15 @@ public class EmployeeChangeService implements ChangeStore {
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("Could not write outbox payload");
         }
+        Timestamp now = Timestamp.from(clock.instant());
         jdbc.update(
                 INSERT_OUTBOX,
                 tenantId,
                 employeeId,
                 EventType.DEACTIVATE.name(),
                 json,
-                Timestamp.from(clock.instant())
+                now,
+                now
         );
     }
 
@@ -264,13 +266,15 @@ public class EmployeeChangeService implements ChangeStore {
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("Could not write outbox payload");
         }
+        Timestamp now = Timestamp.from(clock.instant());
         jdbc.update(
                 INSERT_OUTBOX,
                 command.tenantId(),
                 command.employeeId(),
                 command.type().name(),
                 json,
-                Timestamp.from(clock.instant())
+                now,
+                now
         );
     }
 

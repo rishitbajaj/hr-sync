@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: hrsync
       POSTGRES_USER: hrsync
-      POSTGRES_PASSWORD: hrsync
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     ports:
       - "5432:5432"
     healthcheck:
@@ -23,7 +23,8 @@ services:
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/hrsync
       SPRING_DATASOURCE_USERNAME: hrsync
-      SPRING_DATASOURCE_PASSWORD: hrsync
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      HR_SYNC_OPERATOR_PASSWORD: ${HR_SYNC_OPERATOR_PASSWORD:?Set HR_SYNC_OPERATOR_PASSWORD in .env}
     ports:
       - "8080:8080"
 

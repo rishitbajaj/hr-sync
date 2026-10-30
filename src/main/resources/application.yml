@@ -4,7 +4,7 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/hrsync}
     username: ${SPRING_DATASOURCE_USERNAME:hrsync}
-    password: ${SPRING_DATASOURCE_PASSWORD:hrsync}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
   jpa:
     open-in-view: false
     hibernate:
@@ -49,4 +49,8 @@ hr-sync:
   reconciliation:
     bucket-count: 256
     max-missing-ratio: 0.30
-    operator-password: ${HR_SYNC_OPERATOR_PASSWORD:change-me}
+    operator-password: ${HR_SYNC_OPERATOR_PASSWORD:}
+  retention:
+    age: 30d
+    batch-size: 1000
+    interval: 1h
