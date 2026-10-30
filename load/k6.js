@@ -23,6 +23,7 @@ const eventsStale = new Counter('events_stale');
 const eventsDuplicate = new Counter('events_duplicate');
 const eventsRejected = new Counter('events_rejected');
 const eventsOther = new Counter('events_other');
+const eventsUnknown = new Counter('events_unknown');
 const eventsHttpFail = new Counter('events_http_fail');
 const readLeaks = new Counter('read_leaks');
 const coldExhausted = new Counter('cold_exhausted');
@@ -258,6 +259,11 @@ function postBatch(token, events) {
     tags: { name: 'ingest' },
   });
   observe(response, 'ingest');
+  // A killed app, or an iteration k6 cuts off mid-request, has no classifiable response.
+  if (response.status === 0) {
+    eventsUnknown.add(events.length);
+    return;
+  }
   if (response.status !== 200) {
     eventsHttpFail.add(events.length);
     return;
@@ -412,6 +418,7 @@ export function handleSummary(data) {
     events_duplicate: countOf(data, 'events_duplicate'),
     events_rejected: countOf(data, 'events_rejected'),
     events_other: countOf(data, 'events_other'),
+    events_unknown: countOf(data, 'events_unknown'),
     events_http_fail: countOf(data, 'events_http_fail'),
     read_leaks: countOf(data, 'read_leaks'),
     cold_exhausted: countOf(data, 'cold_exhausted'),

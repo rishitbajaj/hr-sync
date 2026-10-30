@@ -200,7 +200,7 @@ The same machine, image rebuilt from that poller, `VUS=8`, `WARMUP=10s`, `DURATI
 | Mixed | 133,516 | 292s | stalled at 21.6s | 476 | 0s | 0.336s |
 | Kill under load | 25,665 after 120s | 571s | 529s to pending 0 | 16,276 | 75s | 0.329s, pending 0 |
 
-Before mixed and ingest include the unpublished rows of the earlier scenarios. Before contention followed the reads run, which had left nothing pending. After, every outbox row was `PUBLISHED` (`pending` 0, `failed` 0, `notPublished` 0). The oldest-age gauge stores whole seconds, and every sample during ingest, contention, and mixed was 0 while pending was above 0, so those rows were under a second old at the sample. The kill's 75s is the age while the process was down. At 21:17:33 that scrape still showed 16,276 pending; the database check at 21:17:36 found 0.
+Before mixed and ingest include the unpublished rows of the earlier scenarios. Before contention followed the reads run, which had left nothing pending. After, every outbox row was `PUBLISHED` (`pending` 0, `failed` 0, `notPublished` 0). The age gauge has one-second resolution. It stores `extract(epoch from (clock_timestamp() - created_at))` in an `AtomicLong`, so a pending row younger than one second reads 0. Every sample during ingest, contention, and mixed was 0 while pending was above 0, so those rows were under a second old at the sample. The kill's 75s is the age while the process was down. At 21:17:33 that scrape still showed 16,276 pending; the database check at 21:17:36 found 0.
 
 Ingest throughput fell. Steady window, error rate 0 both times: 19.07 req/s (1,907 events/s, p50 418.7 ms, p95 454.5 ms, p99 604.4 ms) before, and 15.87 req/s (1,587 events/s, p50 487.1 ms, p95 658.0 ms, p99 1,204.6 ms) after. 952 steady requests in 60s. Applied 84,920 of 112,800 sent. Docker CPU peaked at 391% for the app and 164% for Postgres (before: 102% and 254%). Hikari max stayed 10, active connections hit 10, and none were waiting. Contention steady rate was 11.23 req/s (674 requests, p50 675.4 ms) against 14.27 req/s before. Mixed warm reads were 6,029 req/s, p50 0.403 ms, against 8,124 req/s and 0.357 ms before.
 
@@ -208,7 +208,7 @@ On the ingest minute, `pg_stat_statements` showed the head lookup at mean 1.81 m
 
 Saved Prometheus scrapes for these runs were 33–46 KB and included `outbox_published_total`, `outbox_claim_size_rows`, `outbox_publish_rate_rows`, Hikari, and JVM memory. None was `# EOF`.
 
-The kill check added 31,679 `processed_event` rows and 31,679 outbox rows. The client was told about 31,520 applies (159 commits it did not see). Version mismatches were 0. Cross-tenant rows were 0. The invariant script still exited 1: k6 reported 8 interrupted iterations, 800 events counted as attempted and neither classified nor an HTTP failure (116,500 attempted, 41,600 classified, 74,100 HTTP failures). The outbox rows from that run were `PUBLISHED`.
+A rerun of that kill command after the invariant change exited 0. Of 110,600 events started, 41,500 came back classified (31,445 applied, 3,830 stale, 4,150 duplicate, 2,075 rejected) and 69,100 had no classifiable response (`events_unknown` 68,300, plus 800 from iterations k6 cut off before that counter moved). The database added 31,735 `processed_event` rows and 31,735 outbox rows, 290 more applies than the client was told about. Version regressions were 0. Cross-tenant rows were 0. The drain check found every outbox row `PUBLISHED` in 0.473s.
 
 ## Verification
 

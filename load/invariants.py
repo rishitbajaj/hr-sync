@@ -4,7 +4,12 @@
 Usage:
   python3 load/invariants.py baseline
   python3 load/invariants.py check ingest
-  python3 load/invariants.py check ingest --allow-unacked
+  python3 load/invariants.py check failure --allow-unacked
+
+Server state is the pass/fail for a kill. A request that never returned a
+classifiable response is an unknown outcome. It is not an attempted event
+left unclassified. --allow-unacked permits those unknowns, and permits the
+database to have applied more rows than the client was told about.
 """
 
 import json
@@ -84,6 +89,32 @@ def oldest_pending():
         """
     )
     return float(value)
+
+
+def version_regressions():
+    tenant_list = ", ".join("'" + tenant + "'" for tenant in tenants())
+    return int(psql(
+        f"""
+        select count(*) from (
+            select
+                source_version,
+                processed_at,
+                lag(source_version) over (
+                    partition by tenant_id, employee_id, channel
+                    order by processed_at, id
+                ) as prev_version,
+                lag(processed_at) over (
+                    partition by tenant_id, employee_id, channel
+                    order by processed_at, id
+                ) as prev_at
+            from processed_event
+            where channel = 'HR' and tenant_id in ({tenant_list})
+        ) ordered
+        where prev_at is not null
+          and processed_at > prev_at
+          and source_version < prev_version
+        """
+    ))
 
 
 def version_mismatches():
@@ -192,11 +223,18 @@ def check(scenario, allow_unacked, drain_timeout):
     attempted = summary["events_attempted"]
     other = summary["events_other"]
     http_fail = summary["events_http_fail"]
+    recorded_unknown = summary.get("events_unknown", 0)
     leaks = summary["read_leaks"]
     outcome_sum = applied + stale + duplicate + rejected
+    # events_attempted is incremented before the POST. A kill can cut the
+    # iteration off before events_unknown is incremented. That remainder is
+    # the same unknown outcome: no classifiable response.
+    residual = attempted - classified - http_fail - recorded_unknown
+    unknown = recorded_unknown + residual
     processed_delta = after["processed"] - before["processed"]
     outbox_delta = after["outbox"] - before["outbox"]
     mismatches = version_mismatches()
+    regressions = version_regressions()
     missing_processed = employees_without_processed()
     leaked = cross_tenant()
     report = {
@@ -205,6 +243,7 @@ def check(scenario, allow_unacked, drain_timeout):
         "classified": classified,
         "attempted": attempted,
         "httpFail": http_fail,
+        "unknown": unknown,
         "other": other,
         "applied": applied,
         "stale": stale,
@@ -218,6 +257,7 @@ def check(scenario, allow_unacked, drain_timeout):
         "failedAfter": after["failed"],
         "notPublishedAfter": after["notPublished"],
         "versionMismatches": mismatches,
+        "versionRegressions": regressions,
         "employeesWithoutProcessed": missing_processed,
         "crossTenantRows": leaked,
         "readLeaks": leaks,
@@ -229,20 +269,21 @@ def check(scenario, allow_unacked, drain_timeout):
         failures.append("outcome sum != classified")
     if other != 0:
         failures.append("unclassified outcomes")
-    if http_fail != attempted - classified:
-        failures.append("http failures do not fill the gap between attempted and classified")
+    if residual < 0:
+        failures.append("classified, http failures, and unknown exceed attempted")
     if leaks != 0:
         failures.append("read responses crossed tenants")
+    if outbox_delta != processed_delta or after["outbox"] != after["processed"]:
+        failures.append("applied changes are not one processed_event and one outbox row")
+    if processed_delta < applied:
+        failures.append("server applied fewer changes than the client was told about")
     if not allow_unacked:
-        if classified != attempted:
-            failures.append("not every sent event was classified")
-        if processed_delta != applied or outbox_delta != applied:
-            failures.append("outbox or processed delta != applied")
-    else:
-        if processed_delta < applied or outbox_delta != processed_delta:
-            failures.append("committed rows are not one outbox per processed change")
-    if mismatches != 0:
-        failures.append("hr_version is not the highest applied version")
+        if unknown != 0:
+            failures.append("events with an unknown outcome")
+        if processed_delta != applied:
+            failures.append("server applied more changes than the client was told about")
+    if mismatches != 0 or regressions != 0:
+        failures.append("versions went backwards")
     if missing_processed != 0:
         failures.append("employee without a processed row")
     if leaked != 0:
