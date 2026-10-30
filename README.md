@@ -140,6 +140,27 @@ Mixed ingest was 636 batches (63,600 events) across the 10s warmup and the 60s h
 
 The outbox poller is the limit that falls over. It claims 100 rows and then waits 1s. The 60s ingest applied 100,740 changes in the whole run, about 1,400 applied events/s, against a poller that later published a 34k queue at about 60 rows/s. After contention the queue was 85,672 pending and a further 120s published almost none of them. Mixed and ingest then sat at 133,516 and 234,256 pending with the count unchanged for 20s. The pending-count plan on that table was a parallel index-only scan (cost about 5,937). The claim itself turns hash and merge joins off. Saved Prometheus scrapes were `# EOF` (6 bytes) or empty; the JSON gauges above came from `/actuator/metrics`.
 
+### Correctness under load
+
+`./load/run.sh` runs `python3 load/invariants.py check <scenario>` after the minute. The four checks below are that run. Reads was a fresh published seed. Contention, mixed, and ingest followed on the same database, so a pending count is the sum of what earlier runs had not published.
+
+| Check | Reads | Contention | Mixed | Ingest |
+| --- | --- | --- | --- | --- |
+| applied + stale + duplicate + rejected | 0 | 86,508 + 6,292 + 0 + 0 = 92,800 | 47,860 + 6,200 + 6,360 + 3,180 = 63,600 | 100,740 + 13,160 + 13,400 + 6,700 = 134,000 |
+| events sent | 0 | 92,800 | 63,600 | 134,000 |
+| processed-event rows added | 0 | 86,508 | 47,860 | 100,740 |
+| outbox rows added | 0 | 86,508 | 47,860 | 100,740 |
+| version mismatches | 0 | 0 | 0 | 0 |
+| cross-tenant rows | 0 | 0 | 0 | 0 |
+| read leaks | 0 | 0 | 0 | 0 |
+| ended PUBLISHED | yes | no | no | no |
+
+Every answered event was one of those four outcomes, and the HTTP failure count was 0. Each applied change added one `processed_event` row and one outbox row. Stale, duplicate, and rejected events added neither. No employee `hr_version` disagreed with the highest applied version stored for it. No load-a row carried the load-b office or name, and no load-b row carried load-a's. The read scenario also checked the body (`officeCode`, `tenantId`, `status`) and counted 0 leaks.
+
+Reads finished with nothing pending. The drain call returned in 0.293s and the oldest-pending age was 0.
+
+The other three did not finish PUBLISHED. Contention published 836 of its 86,508 new rows; after a 120s wait, 85,672 were still `PENDING`, none `FAILED`, and the oldest was 196s. Mixed added 47,860 and published 16; the drain stopped at 21.6s because the pending count (133,516) had not moved, and the oldest was 292s. Ingest added 100,740 and published none; the drain stopped at 21.9s with 234,256 pending and the oldest at 395s. The roster checks still passed. The failed check is the outbox reaching `PUBLISHED`.
+
 ## Verification
 
 `mvn -B test` on 2026-10-30: 181 tests, 0 failures, plus the separate benchmark. That benchmark printed `reconciliation benchmark rows=200000 elapsedMs=2571 peakHeapBytes=86820712 maxHeapBytes=268435456`.
