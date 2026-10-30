@@ -1,6 +1,171 @@
 # hr-sync
 
-HR roster sync: idempotent, out-of-order, self-healing employee records.
+HR roster sync: idempotent, out-of-order, self-healing employee records. Postgres holds the roster, the idempotency rows, and the outbox. The design is in `docs/DESIGN.md`.
+
+## Run
+
+Copy the example env file and set every value. `HR_SYNC_JWT_SECRET` must be at least 32 bytes. There is no default for the secret or the passwords. Compose will not start with an empty value.
+
+```bash
+cp .env.example .env
+docker compose up --build -d
+```
+
+The app listens on port 8080 and Postgres on port 5432. `GET /health` is open and returns 200 when the process is up. Set `SPRING_PROFILES_ACTIVE=demo` in `.env` before that command when you want the booking endpoints below. There is no HTTP API for offices. Insert one for the admin tenant:
+
+```bash
+docker compose exec -T postgres psql -U hrsync -d hrsync -c \
+  "insert into office (id, tenant_id, code) values (gen_random_uuid(), '${HR_SYNC_BOOTSTRAP_ADMIN_TENANT}', 'BLR') on conflict (tenant_id, code) do nothing;"
+```
+
+Run that from a shell that has sourced `.env`, or substitute the tenant yourself.
+
+## Walkthrough
+
+`TENANT` is `HR_SYNC_BOOTSTRAP_ADMIN_TENANT`. The stored tenant is the token's tenant. A body `tenantId` that differs is 403 and writes nothing. An applied result omits `reasonCode`.
+
+```bash
+set -a; source .env; set +a
+TENANT="$HR_SYNC_BOOTSTRAP_ADMIN_TENANT"
+admin_token() {
+  curl -sS -X POST http://localhost:8080/auth/token \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"${HR_SYNC_BOOTSTRAP_ADMIN_USERNAME}\",\"password\":\"${HR_SYNC_BOOTSTRAP_ADMIN_PASSWORD}\"}"
+}
+operator_token() {
+  curl -sS -X POST http://localhost:8080/auth/token \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"${HR_SYNC_BOOTSTRAP_OPERATOR_USERNAME}\",\"password\":\"${HR_SYNC_BOOTSTRAP_OPERATOR_PASSWORD}\"}"
+}
+TOKEN=$(admin_token | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+OP=$(operator_token | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+```
+
+Login returns `token` and `expiresInSeconds` (900 at the 15 minute default). A bad password, a missing token, and an expired token are 401 `UNAUTHORIZED`. The wrong role is 403.
+
+A batch may mix a bad record with a good one. The bad phone is rejected in place. The create still applies. Posting that create again is `DUPLICATE`.
+
+```bash
+curl -sS -X POST http://localhost:8080/sync/events \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"events\":[
+    {\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-bad\",\"sourceVersion\":1,\"type\":\"CREATE\",\"fields\":{\"name\":\"Bad\",\"email\":\"bad@example.com\",\"phone\":\"12345\",\"manager\":\"M1\",\"officeCode\":\"BLR\",\"shift\":\"DAY\"}},
+    {\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-1\",\"sourceVersion\":1,\"type\":\"CREATE\",\"fields\":{\"name\":\"Ada\",\"email\":\"ada@example.com\",\"phone\":\"+15550000001\",\"manager\":\"M1\",\"officeCode\":\"BLR\",\"shift\":\"DAY\"}}
+  ]}"
+curl -sS -X POST http://localhost:8080/sync/events \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"events\":[{\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-1\",\"sourceVersion\":1,\"type\":\"CREATE\",\"fields\":{\"name\":\"Ada\",\"email\":\"ada@example.com\",\"phone\":\"+15550000001\",\"manager\":\"M1\",\"officeCode\":\"BLR\",\"shift\":\"DAY\"}}]}"
+```
+
+The first result is `REJECTED` / `INVALID_PHONE`. The second event in that batch is `APPLIED`. The repeat is `IGNORED` / `DUPLICATE`.
+
+Version 3 then version 2. The batch is stored in version order when both are still newer. Sent after version 3 has committed, version 2 is `IGNORED` / `STALE_IGNORED`, and `hr_version` stays 3.
+
+```bash
+curl -sS -X POST http://localhost:8080/sync/events \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"events\":[{\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-1\",\"sourceVersion\":3,\"type\":\"UPDATE\",\"fields\":{\"name\":\"Ada Three\",\"shift\":\"NIGHT\"}}]}"
+curl -sS -X POST http://localhost:8080/sync/events \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"events\":[{\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-1\",\"sourceVersion\":2,\"type\":\"UPDATE\",\"fields\":{\"name\":\"Ada Two\",\"shift\":\"DAY\"}}]}"
+curl -sS http://localhost:8080/employees/walk-1 -H "Authorization: Bearer $TOKEN"
+docker compose exec -T postgres psql -U hrsync -d hrsync -c \
+  "select name, hr_version, shift from employee where tenant_id = '$TENANT' and employee_id = 'walk-1';"
+```
+
+`GET /employees/walk-1` returns `status`, `officeCode`, and `shift`. It does not return the name or the version. `shift` is `NIGHT`. The SQL row is name `Ada Three`, `hr_version` 3, shift `NIGHT`.
+
+Field ownership. A transport event may set pickup and assistance. An HR event that also sends those values does not write them, and does not change `transportVersion`.
+
+```bash
+curl -sS -X POST http://localhost:8080/sync/transport-events \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"events\":[{\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-1\",\"sourceVersion\":1,\"type\":\"UPDATE\",\"fields\":{\"pickupPoint\":\"Gate 4\",\"specialAssistance\":\"wheelchair\"}}]}"
+curl -sS -X POST http://localhost:8080/sync/events \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"events\":[{\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-1\",\"sourceVersion\":4,\"type\":\"UPDATE\",\"fields\":{\"name\":\"Ada Owned\",\"pickupPoint\":\"Gate 9\",\"specialAssistance\":\"none\"}}]}"
+docker compose exec -T postgres psql -U hrsync -d hrsync -c \
+  "select name, hr_version, pickup_point, transport_version from employee where tenant_id = '$TENANT' and employee_id = 'walk-1';"
+```
+
+The SQL row is name `Ada Owned`, `hr_version` 4, `pickup_point` `Gate 4`, `transport_version` 1.
+
+Reconciliation. The file omits `walk-1`, so the missing ratio is above 0.30. Rows that are in the file are applied. Missing employees are not deactivated until an operator approves. The CSV has nine columns: `tenantId,employeeId,sourceVersion,name,email,phone,manager,officeCode,shift`.
+
+```bash
+printf '%s\n' 'tenantId,employeeId,sourceVersion,name,email,phone,manager,officeCode,shift' \
+  "$TENANT,walk-new,1,New,new@example.com,+15550000002,M1,BLR,DAY" > /tmp/truncated.csv
+curl -sS -X POST "http://localhost:8080/reconciliation/runs?tenantId=$TENANT" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: text/csv' \
+  --data-binary @/tmp/truncated.csv
+```
+
+The body has `status` `HALTED` and `haltReason` `MISSING_RATIO_EXCEEDED`. Copy `id`, then:
+
+```bash
+curl -sS -X POST "http://localhost:8080/reconciliation/runs/$RUN/approve?tenantId=$TENANT" \
+  -H "Authorization: Bearer $OP"
+```
+
+`$OP` is the operator token. An admin receives 403. The status becomes `APPROVED`. `walk-1` is `DEACTIVATED` when its `hrVersion` is still the version saved with the halt. A second run while one is `RUNNING` is 409.
+
+Deactivation effects need `SPRING_PROFILES_ACTIVE=demo` and a restart so `/demo/**` is registered. Seed a future trip, deactivate, and read the board. The poller publishes within its one-second interval.
+
+```bash
+curl -sS -X POST http://localhost:8080/demo/trips \
+  -H 'Content-Type: application/json' \
+  -d "{\"tenantId\":\"$TENANT\",\"tripId\":\"trip-walk\",\"capacity\":4}"
+curl -sS -X POST http://localhost:8080/demo/bookings \
+  -H 'Content-Type: application/json' \
+  -d "{\"bookingId\":\"book-walk\",\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-book\",\"tripId\":\"trip-walk\",\"startsAt\":\"2026-12-01T09:00:00Z\"}"
+curl -sS -X POST http://localhost:8080/sync/events \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"events\":[{\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-book\",\"sourceVersion\":1,\"type\":\"CREATE\",\"fields\":{\"name\":\"Rider\",\"email\":\"rider@example.com\",\"phone\":\"+15550000003\",\"officeCode\":\"BLR\",\"shift\":\"DAY\"}}]}"
+curl -sS -X POST http://localhost:8080/sync/events \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"events\":[{\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-book\",\"sourceVersion\":2,\"type\":\"DEACTIVATE\"}]}"
+curl -sS http://localhost:8080/demo/bookings
+```
+
+The booking's `cancelled` is true after the outbox row is published. `POST /demo/failures` with `{"failures":1}` makes the next cancel throw. That outbox row stays pending, then `FAILED` after 5 attempts, and blocks later events for that employee. `GET /outbox/failed?tenantId=$TENANT` with the operator token lists `employeeId`, `eventId`, `attempts`, and `reasonCode`. `POST /outbox/{eventId}/replay?tenantId=$TENANT` sets it back to pending.
+
+`GET /actuator/prometheus` with the operator token and `Accept: text/plain` returns the scrape. An admin receives 403.
+
+## Assumptions
+
+One app process and one Postgres. Offices exist before an HR event names them. The admin acts only in the bootstrap tenant. Tokens are HS256 JWTs that last 15 minutes. Bookings live in the same database, schema `booking_svc`, and each cancel commits on its own. The publisher logs the notice in this process. It does not call a broker. The age gauge has one-second resolution.
+
+## API
+
+| Method | Path | Who | Role |
+| --- | --- | --- | --- |
+| GET | `/health` | anyone | liveness |
+| POST | `/auth/token` | anyone | returns `token`, `expiresInSeconds` |
+| POST | `/sync/events` | admin | HR batch. Body `{"events":[...]}`. Response `{"results":[...]}` |
+| POST | `/sync/transport-events` | admin | transport batch. Type must be `UPDATE` |
+| GET | `/employees/{id}` | employee (self), admin, operator with `tenantId` | `tenantId`, `employeeId`, `status`, `officeCode`, `shift`. Placeholders are not returned |
+| POST | `/reconciliation/runs?tenantId=` | admin | `text/csv` export |
+| GET | `/reconciliation/runs/{id}?tenantId=` | admin or operator | run status |
+| POST | `/reconciliation/runs/{id}/approve?tenantId=` | operator | apply a halted deactivation set |
+| GET | `/outbox/failed?tenantId=` | operator | failed rows |
+| POST | `/outbox/{id}/replay?tenantId=` | operator | failed row back to pending |
+| POST | `/outbox/{id}/discard?tenantId=` | operator | body `{"reason":"..."}`, failed row only |
+| GET | `/actuator/prometheus` | operator | `Accept: text/plain` |
+| POST, GET | `/demo/**` | anyone, demo profile only | trips, bookings, failure injection |
+
+The role table is in `docs/SECURITY.md`. Conflict and idempotency rules are in `docs/CONFLICT_RULES.md`. Deactivation rules are in `docs/DEACTIVATION.md`. Operations and alerts are in `docs/OPERATIONS.md`. The claim stall is in `docs/OUTBOX_CLAIM.md`. The load harness is in `load/README.md`.
+
+## Tests
+
+Java 21. From the repo root:
+
+```bash
+mvn -B test
+```
+
+That runs the tests and then the reconciliation benchmark in a forked JVM with `-Xmx256m`. The benchmark is `ReconciliationBenchmarkTest`. It is excluded from the default Surefire execution and included again as execution `reconciliation-benchmark`.
+
+Load tests use `load/docker-compose.yml` (ports 5442 and 8092) and are described in `load/README.md`.
 
 ## Reconciliation benchmark
 
@@ -33,7 +198,7 @@ After a `processed_event` row is pruned, replaying that version does not apply i
 
 Deactivating an employee writes an `EMPLOYEE_DEACTIVATED` outbox event. When that event is delivered, future cab bookings for that employee are cancelled and their seats are freed. A booking is future when it starts after the deactivation was recorded. Past and in-progress bookings stay. A later create does not restore cancelled bookings. If the booking client fails, the outbox retry path redelivers the event; that employee's later events wait while a deactivation for them is still pending or failed, and other employees do not. The rules are in `docs/DEACTIVATION.md`.
 
-With the `demo` profile, `POST /demo/trips`, `POST /demo/bookings`, and `GET /demo/bookings` seed and inspect the in-memory bookings.
+With the `demo` profile, `POST /demo/trips`, `POST /demo/bookings`, `GET /demo/bookings`, and `POST /demo/failures` seed and inspect bookings. The rows are stored in Postgres schema `booking_svc`. The profile also inserts users `operator`, `admin`, and `employee`, all with password `demo-password`.
 
 ## Security
 
@@ -212,9 +377,11 @@ A rerun of that kill command after the invariant change exited 0. Of 110,600 eve
 
 ## Verification
 
-`mvn -B test` on 2026-10-30: 181 tests, 0 failures, plus the separate benchmark. That benchmark printed `reconciliation benchmark rows=200000 elapsedMs=2571 peakHeapBytes=86820712 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-30: 186 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=3549 peakHeapBytes=86758736 maxHeapBytes=268435456`.
 
 ## Known limitations
+
+`GET /employees/{id}` returns status, office, and shift. It does not return name, email, phone, pickup point, or either version. Those columns are in Postgres.
 
 Logs may include personal field names (`name`, `email`, `phone`, `pickupPoint`, and the other names in `changedFields`). They do not include the values.
 
