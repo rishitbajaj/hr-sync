@@ -1,0 +1,56 @@
+# Isolated from the audit stacks on 5432/8080 and 5434/8081.
+name: hrsync-load
+
+networks:
+  default:
+    name: hrsync-load
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hrsync-load-pg
+    environment:
+      POSTGRES_DB: hrsync
+      POSTGRES_USER: hrsync
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in load/.env}
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - pg_stat_statements.max=10000
+    ports:
+      - "5442:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hrsync -d hrsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - hrsync-load-pg:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hrsync-load-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/hrsync
+      SPRING_DATASOURCE_USERNAME: hrsync
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in load/.env}
+      HR_SYNC_JWT_SECRET: ${HR_SYNC_JWT_SECRET:?Set HR_SYNC_JWT_SECRET in load/.env}
+      HR_SYNC_BOOTSTRAP_OPERATOR_USERNAME: ${HR_SYNC_BOOTSTRAP_OPERATOR_USERNAME:?Set HR_SYNC_BOOTSTRAP_OPERATOR_USERNAME in load/.env}
+      HR_SYNC_BOOTSTRAP_OPERATOR_PASSWORD: ${HR_SYNC_BOOTSTRAP_OPERATOR_PASSWORD:?Set HR_SYNC_BOOTSTRAP_OPERATOR_PASSWORD in load/.env}
+      HR_SYNC_BOOTSTRAP_ADMIN_USERNAME: ${HR_SYNC_BOOTSTRAP_ADMIN_USERNAME:?Set HR_SYNC_BOOTSTRAP_ADMIN_USERNAME in load/.env}
+      HR_SYNC_BOOTSTRAP_ADMIN_PASSWORD: ${HR_SYNC_BOOTSTRAP_ADMIN_PASSWORD:?Set HR_SYNC_BOOTSTRAP_ADMIN_PASSWORD in load/.env}
+      HR_SYNC_BOOTSTRAP_ADMIN_TENANT: ${HR_SYNC_BOOTSTRAP_ADMIN_TENANT:?Set HR_SYNC_BOOTSTRAP_ADMIN_TENANT in load/.env}
+    ports:
+      - "8092:8080"
+
+volumes:
+  hrsync-load-pg:

@@ -8,3 +8,5 @@ target/
 .vscode/
 *.log
 .DS_Store
+load/.env
+load/data/
