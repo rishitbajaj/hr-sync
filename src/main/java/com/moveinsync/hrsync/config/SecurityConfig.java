@@ -25,6 +25,9 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/reconciliation/runs/*/approve").hasRole("OPERATOR")
+                        .requestMatchers(HttpMethod.GET, "/outbox/failed").hasRole("OPERATOR")
+                        .requestMatchers(HttpMethod.POST, "/outbox/*/replay").hasRole("OPERATOR")
+                        .requestMatchers(HttpMethod.POST, "/outbox/*/discard").hasRole("OPERATOR")
                         .anyRequest().permitAll())
                 .httpBasic(Customizer.withDefaults())
                 .build();

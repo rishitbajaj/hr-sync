@@ -35,10 +35,13 @@ public class OutboxPoller {
               and not exists (
                   select 1
                   from outbox earlier
-                  where earlier.status = 'PENDING'
-                    and earlier.tenant_id = o.tenant_id
+                  where earlier.tenant_id = o.tenant_id
                     and earlier.aggregate_id = o.aggregate_id
                     and earlier.id < o.id
+                    and (
+                        earlier.status = 'PENDING'
+                        or (earlier.status = 'FAILED' and earlier.event_type = 'EMPLOYEE_DEACTIVATED')
+                    )
               )
             order by o.id
             for update of o skip locked
@@ -107,7 +110,7 @@ public class OutboxPoller {
             jdbc.update(
                     """
                             update outbox
-                            set published_at = ?, status = 'PUBLISHED', next_attempt_at = null
+                            set published_at = ?, status = 'PUBLISHED', next_attempt_at = null, failure_reason = null
                             where id = ?
                             """,
                     Timestamp.from(clock.instant()),
@@ -125,10 +128,11 @@ public class OutboxPoller {
             jdbc.update(
                     """
                             update outbox
-                            set attempts = ?, status = 'FAILED', next_attempt_at = null
+                            set attempts = ?, status = 'FAILED', next_attempt_at = null, failure_reason = ?
                             where id = ?
                             """,
                     attempts,
+                    reasonCode(exception),
                     notice.eventId()
             );
             log.warn(
@@ -144,12 +148,13 @@ public class OutboxPoller {
         Duration delay = retryDelay(attempts);
         jdbc.update(
                 """
-                        update outbox
-                        set attempts = ?, next_attempt_at = ?
-                        where id = ?
-                        """,
+                update outbox
+                set attempts = ?, next_attempt_at = ?, failure_reason = ?
+                where id = ?
+                """,
                 attempts,
                 Timestamp.from(clock.instant().plus(delay)),
+                reasonCode(exception),
                 notice.eventId()
         );
         log.warn(
@@ -161,6 +166,14 @@ public class OutboxPoller {
                 delay.toMillis(),
                 exception.getClass().getSimpleName()
         );
+    }
+
+    private static String reasonCode(RuntimeException exception) {
+        String name = exception.getClass().getSimpleName();
+        if (name == null || name.isBlank()) {
+            return "FAILURE";
+        }
+        return name.length() <= 64 ? name : name.substring(0, 64);
     }
 
     private Duration retryDelay(int attempt) {

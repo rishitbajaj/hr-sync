@@ -20,7 +20,9 @@ The consumer also inserts `deactivation_effect` keyed by the outbox event id, in
 
 If the booking client throws, the consumer throws. The poller keeps the outbox row `PENDING`, increments attempts, and backs off. Nothing is marked cancelled in `deactivation_effect`, so the retry is the delivery that performs the cancellation. No failure is swallowed.
 
-While that row is still `PENDING`, the claim query's per-employee guard will not deliver a later event for the same employee. That wait is acceptable: the cancellation should stay ahead of a later notice for that person, and a later create does not put the bookings back. Other employees are still claimed. When attempts are exhausted the row becomes `FAILED` and stays for an operator. The guard only looks at `PENDING` rows.
+While that row is still `PENDING`, the claim query's per-employee guard will not deliver a later event for the same employee. That wait is acceptable: the cancellation should stay ahead of a later notice for that person, and a later create does not put the bookings back. Other employees are still claimed. When attempts are exhausted the row becomes `FAILED`. A `FAILED` `EMPLOYEE_DEACTIVATED` row keeps blocking later events for that employee until an operator replays or discards it. Other employees are unaffected. The trade-off is that one poison deactivation holds that one employee, and nobody else, until someone handles it.
+
+An operator lists failed rows with `GET /outbox/failed` (employee id, event id, attempts, and a reason code; no personal values). `POST /outbox/{id}/replay` sets that row back to `PENDING` with attempts reset. `POST /outbox/{id}/discard` requires a reason and writes it to `outbox_discard` in the same transaction that marks the row `DISCARDED`.
 
 ## A later create
 

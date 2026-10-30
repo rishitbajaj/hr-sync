@@ -31,7 +31,7 @@ After a `processed_event` row is pruned, replaying that version does not apply i
 
 ## Deactivation
 
-Deactivating an employee writes an `EMPLOYEE_DEACTIVATED` outbox event. When that event is delivered, future cab bookings for that employee are cancelled and their seats are freed. A booking is future when it starts after the deactivation was recorded. Past and in-progress bookings stay. A later create does not restore cancelled bookings. If the booking client fails, the outbox retry path redelivers the event; that employee's later events wait while the row is still pending, and other employees do not. The rules are in `docs/DEACTIVATION.md`.
+Deactivating an employee writes an `EMPLOYEE_DEACTIVATED` outbox event. When that event is delivered, future cab bookings for that employee are cancelled and their seats are freed. A booking is future when it starts after the deactivation was recorded. Past and in-progress bookings stay. A later create does not restore cancelled bookings. If the booking client fails, the outbox retry path redelivers the event; that employee's later events wait while a deactivation for them is still pending or failed, and other employees do not. The rules are in `docs/DEACTIVATION.md`.
 
 With the `demo` profile, `POST /demo/trips`, `POST /demo/bookings`, and `GET /demo/bookings` seed and inspect the in-memory bookings.
 

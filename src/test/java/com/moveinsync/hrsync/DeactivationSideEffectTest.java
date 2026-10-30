@@ -230,6 +230,120 @@ class DeactivationSideEffectTest {
     }
 
     @Test
+    void aFailedDeactivationBlocksThatEmployeeUntilReplay() {
+        String tenant = "cab-failed";
+        hire(tenant, "emp-1", "Ada");
+        Instant start = clock.instant().plus(Duration.ofDays(1));
+        bookings.seedTrip(tenant, "trip-1", 1);
+        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start);
+        bookings.failNext(Integer.MAX_VALUE);
+        deactivate(tenant, "emp-1", 2);
+        assertThat(poller.poll()).isZero();
+        assertThat(poller.poll()).isZero();
+        assertThat(poller.poll()).isZero();
+        assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("FAILED");
+        long failedId = failedEventId(tenant, "emp-1");
+
+        assertThat(syncEvents.ingest(java.util.List.of(new SyncEvent(
+                tenant,
+                "emp-1",
+                3L,
+                EventType.CREATE,
+                new EmployeeFields("Ada", "emp-1@example.com", "+15550000001", "M1", OFFICE, null, null, "DAY")
+        ))).get(0).outcome()).isEqualTo(Outcome.APPLIED);
+        assertThat(poller.poll()).isZero();
+        assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("PENDING");
+
+        hire(tenant, "emp-ok", "Bea");
+        assertThat(outboxStatus(tenant, "emp-ok")).isEqualTo("PUBLISHED");
+        assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("PENDING");
+
+        ResponseEntity<String> refused = restTemplate.getForEntity("/outbox/failed", String.class);
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        ResponseEntity<String> listed = restTemplate.withBasicAuth("operator", "test-operator")
+                .getForEntity("/outbox/failed", String.class);
+        assertThat(listed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(listed.getBody()).contains("emp-1").contains(Long.toString(failedId))
+                .contains("\"attempts\":3").contains("BookingClientException")
+                .doesNotContain("Ada").doesNotContain("emp-1@example.com");
+
+        ResponseEntity<String> replayRefused = restTemplate.postForEntity(
+                "/outbox/" + failedId + "/replay",
+                HttpEntity.EMPTY,
+                String.class
+        );
+        assertThat(replayRefused.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        ResponseEntity<String> replayed = restTemplate.withBasicAuth("operator", "test-operator")
+                .postForEntity("/outbox/" + failedId + "/replay", HttpEntity.EMPTY, String.class);
+        assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        bookings.failNext(0);
+        assertThat(poller.poll()).isEqualTo(1);
+        assertThat(bookings.isCancelled("later")).isTrue();
+        assertThat(bookings.occupied("trip-1")).isZero();
+        assertThat(effectRows(tenant, "emp-1")).isEqualTo(1);
+        assertThat(seatsFreed(tenant, "emp-1")).isEqualTo(1);
+        assertThat(publishedDeactivations(tenant, "emp-1")).isEqualTo(1);
+        assertThat(poller.poll()).isEqualTo(1);
+        assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("PUBLISHED");
+
+        ResponseEntity<String> again = restTemplate.withBasicAuth("operator", "test-operator")
+                .postForEntity("/outbox/" + failedId + "/replay", HttpEntity.EMPTY, String.class);
+        assertThat(again.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void discardingAFailedDeactivationIsAuditedAndUnblocks() {
+        String tenant = "cab-discard";
+        hire(tenant, "emp-1", "Ada");
+        bookings.failNext(Integer.MAX_VALUE);
+        deactivate(tenant, "emp-1", 2);
+        assertThat(poller.poll()).isZero();
+        assertThat(poller.poll()).isZero();
+        assertThat(poller.poll()).isZero();
+        long failedId = failedEventId(tenant, "emp-1");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<String> blank = restTemplate.withBasicAuth("operator", "test-operator")
+                .postForEntity("/outbox/" + failedId + "/discard", new HttpEntity<>("{\"reason\":\" \"}", headers), String.class);
+        assertThat(blank.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("FAILED");
+
+        ResponseEntity<String> refused = restTemplate.postForEntity(
+                "/outbox/" + failedId + "/discard",
+                new HttpEntity<>("{\"reason\":\"poison event\"}", headers),
+                String.class
+        );
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        ResponseEntity<String> discarded = restTemplate.withBasicAuth("operator", "test-operator")
+                .postForEntity(
+                        "/outbox/" + failedId + "/discard",
+                        new HttpEntity<>("{\"reason\":\"poison event\"}", headers),
+                        String.class
+                );
+        assertThat(discarded.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("DISCARDED");
+        assertThat(jdbc.queryForObject(
+                "select reason from outbox_discard where event_id = ?",
+                String.class,
+                failedId
+        )).isEqualTo("poison event");
+
+        assertThat(syncEvents.ingest(java.util.List.of(new SyncEvent(
+                tenant,
+                "emp-1",
+                3L,
+                EventType.CREATE,
+                new EmployeeFields("Ada", "emp-1@example.com", "+15550000001", "M1", OFFICE, null, null, "DAY")
+        ))).get(0).outcome()).isEqualTo(Outcome.APPLIED);
+        assertThat(poller.poll()).isEqualTo(1);
+        assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("PUBLISHED");
+    }
+
+    @Test
     void aCrashAfterCancellationDoesNotCancelAgainOnRedelivery() {
         String tenant = "cab-crash";
         hire(tenant, "emp-1", "Ada");
@@ -534,6 +648,20 @@ class DeactivationSideEffectTest {
                 employeeId
         );
         return count == null ? 0 : count;
+    }
+
+    private long failedEventId(String tenant, String employeeId) {
+        Long id = jdbc.queryForObject(
+                """
+                        select id from outbox
+                        where tenant_id = ? and aggregate_id = ? and status = 'FAILED'
+                          and event_type = 'EMPLOYEE_DEACTIVATED'
+                        """,
+                Long.class,
+                tenant,
+                employeeId
+        );
+        return id == null ? 0 : id;
     }
 
     private int outboxAttempts(String tenant, String employeeId) {
