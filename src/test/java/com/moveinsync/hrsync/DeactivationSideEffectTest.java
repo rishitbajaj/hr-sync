@@ -6,6 +6,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.auth.DemoUserSeeder;
+import com.moveinsync.hrsync.auth.TestAccounts;
 import com.moveinsync.hrsync.booking.Cancellation;
 import com.moveinsync.hrsync.booking.MockBookingService;
 import com.moveinsync.hrsync.domain.EmployeeFields;
@@ -34,6 +35,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -83,6 +85,9 @@ class DeactivationSideEffectTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
 
     @Autowired
     private TestRestTemplate restTemplate;
@@ -493,7 +498,7 @@ class DeactivationSideEffectTest {
         bookings.seedBooking("drop-future", tenant, "emp-2", "trip-1", now.plus(Duration.ofDays(1)));
         bookings.seedBooking("drop-past", tenant, "emp-2", "trip-1", now.minus(Duration.ofDays(2)));
 
-        HttpHeaders csvHeaders = new HttpHeaders();
+        HttpHeaders csvHeaders = TestAccounts.admin(jdbc, passwordEncoder, restTemplate, objectMapper, tenant);
         csvHeaders.setContentType(MediaType.parseMediaType("text/csv"));
         String csv = """
                 tenantId,employeeId,sourceVersion,name,email,phone,managerId,officeCode,shift

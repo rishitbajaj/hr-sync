@@ -6,6 +6,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.api.SyncBatchRequest;
+import com.moveinsync.hrsync.auth.TestAccounts;
 import com.moveinsync.hrsync.api.SyncEventRequest;
 import com.moveinsync.hrsync.api.SyncFieldsRequest;
 import com.moveinsync.hrsync.domain.EmployeeFields;
@@ -32,6 +33,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -68,6 +71,12 @@ class SyncEventsHttpTest {
     private SyncEventService syncEvents;
 
     @Autowired
+    private JdbcTemplate jdbc;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Autowired
     private PlatformTransactionManager transactionManager;
 
     @BeforeEach
@@ -84,8 +93,7 @@ class SyncEventsHttpTest {
         logs.start();
         root.addAppender(logs);
         try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpHeaders headers = jsonHeaders();
             ResponseEntity<String> response = restTemplate.postForEntity(
                     "/sync/events",
                     new HttpEntity<>(SampleHrBatch.request(), headers),
@@ -229,8 +237,8 @@ class SyncEventsHttpTest {
         }
     }
 
-    private static HttpHeaders jsonHeaders() {
-        HttpHeaders headers = new HttpHeaders();
+    private HttpHeaders jsonHeaders() {
+        HttpHeaders headers = TestAccounts.admin(jdbc, passwordEncoder, restTemplate, objectMapper, SampleHrBatch.TENANT);
         headers.setContentType(MediaType.APPLICATION_JSON);
         return headers;
     }

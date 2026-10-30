@@ -3,6 +3,7 @@ package com.moveinsync.hrsync;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.api.SyncBatchRequest;
+import com.moveinsync.hrsync.auth.TestAccounts;
 import com.moveinsync.hrsync.api.SyncEventRequest;
 import com.moveinsync.hrsync.api.SyncFieldsRequest;
 import com.moveinsync.hrsync.domain.EmployeeFields;
@@ -28,6 +29,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -68,6 +70,9 @@ class OrderingScenariosTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -304,7 +309,7 @@ class OrderingScenariosTest {
     }
 
     private JsonNode post(String path, SyncEventRequest... events) throws Exception {
-        HttpHeaders headers = new HttpHeaders();
+        HttpHeaders headers = TestAccounts.admin(jdbc, passwordEncoder, restTemplate, objectMapper, SampleHrBatch.TENANT);
         headers.setContentType(MediaType.APPLICATION_JSON);
         ResponseEntity<String> response = restTemplate.postForEntity(
                 path,

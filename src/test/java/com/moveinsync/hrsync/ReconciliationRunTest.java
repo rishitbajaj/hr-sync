@@ -2,6 +2,7 @@ package com.moveinsync.hrsync;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moveinsync.hrsync.auth.TestAccounts;
 import com.moveinsync.hrsync.config.ReconciliationSettings;
 import com.moveinsync.hrsync.domain.EmployeeFields;
 import com.moveinsync.hrsync.domain.EventType;
@@ -341,8 +342,10 @@ class ReconciliationRunTest {
         assertThat(deactivated(strict)).isZero();
         assertThat(status(strict, "emp-ghost")).isEqualTo("PLACEHOLDER");
         assertThat(status(strict, "emp-9")).isEqualTo("ACTIVE");
-        ResponseEntity<String> metric = restTemplate.getForEntity(
+        ResponseEntity<String> metric = restTemplate.exchange(
                 "/actuator/metrics/reconciliation.halted",
+                HttpMethod.GET,
+                new HttpEntity<>(operatorHeaders()),
                 String.class
         );
         assertThat(metric.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -556,7 +559,7 @@ class ReconciliationRunTest {
     }
 
     private ResponseEntity<String> postRaw(String tenant, byte[] csv) {
-        HttpHeaders headers = new HttpHeaders();
+        HttpHeaders headers = adminHeaders(tenant);
         headers.setContentType(MediaType.parseMediaType("text/csv"));
         return restTemplate.postForEntity(
                 "/reconciliation/runs?tenantId=" + tenant,
@@ -590,15 +593,20 @@ class ReconciliationRunTest {
         assertThat(fetched.get("tenantId").asText()).isEqualTo(tenant);
         assertThat(fetched.get("status").asText()).isEqualTo("HALTED");
 
-        ResponseEntity<String> otherTenant = restTemplate.getForEntity(
+        HttpHeaders scopeAdmin = adminHeaders(tenant);
+        ResponseEntity<String> otherTenant = restTemplate.exchange(
                 "/reconciliation/runs/" + run.get("id").asText() + "?tenantId=other-co",
+                HttpMethod.GET,
+                new HttpEntity<>(scopeAdmin),
                 String.class
         );
         assertThat(otherTenant.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(otherTenant.getBody()).doesNotContain("Pat").doesNotContain("Ada").doesNotContain("@example.com");
 
-        ResponseEntity<String> missingTenant = restTemplate.getForEntity(
+        ResponseEntity<String> missingTenant = restTemplate.exchange(
                 "/reconciliation/runs/" + run.get("id").asText(),
+                HttpMethod.GET,
+                new HttpEntity<>(scopeAdmin),
                 String.class
         );
         assertThat(missingTenant.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
@@ -621,8 +629,10 @@ class ReconciliationRunTest {
     }
 
     private JsonNode getRun(String tenant, String id) throws Exception {
-        ResponseEntity<String> response = restTemplate.getForEntity(
+        ResponseEntity<String> response = restTemplate.exchange(
                 "/reconciliation/runs/" + id + "?tenantId=" + tenant,
+                HttpMethod.GET,
+                new HttpEntity<>(adminHeaders(tenant)),
                 String.class
         );
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -726,6 +736,10 @@ class ReconciliationRunTest {
                 tenant
         );
         return count == null ? 0 : count;
+    }
+
+    private HttpHeaders adminHeaders(String tenant) {
+        return TestAccounts.admin(jdbc, passwordEncoder, restTemplate, objectMapper, tenant);
     }
 
     private HttpHeaders operatorHeaders() throws Exception {

@@ -2,6 +2,7 @@ package com.moveinsync.hrsync;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moveinsync.hrsync.auth.TestAccounts;
 import com.moveinsync.hrsync.repo.OfficeEntity;
 import com.moveinsync.hrsync.repo.OfficeRepository;
 import org.junit.jupiter.api.Test;
@@ -17,6 +18,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -63,6 +65,9 @@ class ReconciliationBenchmarkTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
 
     @Test
     void identicalExportDiffsTwoHundredThousandRowsUnderTheHeapCap() throws Exception {
@@ -129,7 +134,7 @@ class ReconciliationBenchmarkTest {
     }
 
     private JsonNode postCsv(Path csv) throws Exception {
-        HttpHeaders headers = new HttpHeaders();
+        HttpHeaders headers = TestAccounts.admin(jdbc, passwordEncoder, restTemplate, objectMapper, TENANT);
         headers.setContentType(MediaType.parseMediaType("text/csv"));
         ResponseEntity<String> response = restTemplate.postForEntity(
                 "/reconciliation/runs?tenantId=" + TENANT,
