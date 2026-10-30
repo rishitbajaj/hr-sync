@@ -294,13 +294,13 @@ class DeactivationSideEffectTest {
         assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 
         bookings.failNext(0);
-        assertThat(poller.poll()).isEqualTo(1);
+        assertThat(poller.poll()).isEqualTo(2);
         assertThat(bookings.isCancelled("later")).isTrue();
         assertThat(bookings.occupied("trip-1")).isZero();
         assertThat(effectRows(tenant, "emp-1")).isEqualTo(1);
         assertThat(seatsFreed(tenant, "emp-1")).isEqualTo(1);
         assertThat(publishedDeactivations(tenant, "emp-1")).isEqualTo(1);
-        assertThat(poller.poll()).isEqualTo(1);
+        assertThat(poller.poll()).isZero();
         assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("PUBLISHED");
 
         ResponseEntity<String> again = restTemplate.exchange(

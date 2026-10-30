@@ -18,6 +18,6 @@ public class OutboxScheduling implements SchedulingConfigurer {
 
     @Override
     public void configureTasks(ScheduledTaskRegistrar registrar) {
-        registrar.addFixedDelayTask(poller::poll, settings.getPollInterval());
+        registrar.addFixedDelayTask(poller::tick, settings.getPollInterval());
     }
 }

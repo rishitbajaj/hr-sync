@@ -53,7 +53,10 @@ hr-sync:
     max-body-bytes: 1048576
   outbox:
     poll-interval: 1s
-    batch-size: 100
+    batch-size: 400
+    employee-cap: 100
+    publisher-threads: 2
+    tick-budget: 3s
     max-attempts: 5
     retry-base: 500ms
     retry-max-delay: 30s

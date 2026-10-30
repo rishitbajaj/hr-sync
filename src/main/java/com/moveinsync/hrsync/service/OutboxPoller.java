@@ -7,6 +7,7 @@ import com.moveinsync.hrsync.domain.ChangeNotice;
 import com.moveinsync.hrsync.domain.EventPublisher;
 import com.moveinsync.hrsync.metrics.SyncMeters;
 import com.moveinsync.hrsync.observability.MdcScope;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -14,13 +15,20 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadLocalRandom;
 
 @Component
@@ -28,26 +36,70 @@ public class OutboxPoller {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxPoller.class);
 
-    private static final String CLAIM = """
-            select o.id, o.tenant_id, o.aggregate_id, o.event_type, o.payload::text as payload, o.attempts,
-                   o.created_at, o.correlation_id
-            from outbox o
-            where o.status = 'PENDING'
-              and o.next_attempt_at <= ?
-              and not exists (
-                  select 1
-                  from outbox earlier
-                  where earlier.tenant_id = o.tenant_id
-                    and earlier.aggregate_id = o.aggregate_id
-                    and earlier.id < o.id
-                    and (
-                        earlier.status = 'PENDING'
-                        or (earlier.status = 'FAILED' and earlier.event_type = 'EMPLOYEE_DEACTIVATED')
-                    )
+    // One index probe per employee, using idx_outbox_pending_aggregate, instead of a
+    // nested-loop search for LIMIT rows. A poll that asks for more heads than exist
+    // must not scan every pending row.
+    private static final String HEADS = """
+            with recursive heads as (
+              (
+                select tenant_id, aggregate_id, id, next_attempt_at, 0 as ready
+                from outbox
+                where status = 'PENDING'
+                order by tenant_id, aggregate_id, id
+                limit 1
               )
-            order by o.id
-            for update of o skip locked
+              union all
+              select n.tenant_id, n.aggregate_id, n.id, n.next_attempt_at,
+                     h.ready + case when h.next_attempt_at <= ? then 1 else 0 end
+              from heads h
+              join lateral (
+                select tenant_id, aggregate_id, id, next_attempt_at
+                from outbox
+                where status = 'PENDING'
+                  and (tenant_id, aggregate_id) > (h.tenant_id, h.aggregate_id)
+                order by tenant_id, aggregate_id, id
+                limit 1
+              ) n on true
+              where h.ready < ?
+            )
+            select tenant_id, aggregate_id, id
+            from heads
+            where next_attempt_at <= ?
+              and not exists (
+                select 1
+                from outbox blocked
+                where blocked.tenant_id = heads.tenant_id
+                  and blocked.aggregate_id = heads.aggregate_id
+                  and blocked.id < heads.id
+                  and blocked.status = 'FAILED'
+                  and blocked.event_type = 'EMPLOYEE_DEACTIVATED'
+              )
+            order by id
+            """;
+
+    private static final String LOCK_HEAD = """
+            select id
+            from outbox
+            where id = ? and tenant_id = ? and status = 'PENDING'
+            for update skip locked
+            """;
+
+    private static final String LOCK_RUN = """
+            select id, tenant_id, aggregate_id, event_type, payload::text as payload, attempts,
+                   created_at, correlation_id, next_attempt_at
+            from outbox
+            where tenant_id = ? and aggregate_id = ? and status = 'PENDING' and id >= ?
+            order by id
             limit ?
+            for update
+            """;
+
+    private static final String BLOCKED = """
+            select 1
+            from outbox
+            where tenant_id = ? and aggregate_id = ? and id < ?
+              and status = 'FAILED' and event_type = 'EMPLOYEE_DEACTIVATED'
+            limit 1
             """;
 
     private final JdbcTemplate jdbc;
@@ -59,6 +111,7 @@ public class OutboxPoller {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final SyncMeters meters;
+    private final ExecutorService publishers;
 
     public OutboxPoller(
             JdbcTemplate jdbc,
@@ -80,6 +133,34 @@ public class OutboxPoller {
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.meters = meters;
+        int threads = Math.max(1, settings.getPublisherThreads());
+        this.publishers = threads == 1 ? null : Executors.newFixedThreadPool(threads, runnable -> {
+            Thread thread = new Thread(runnable, "outbox-publish");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    @PreDestroy
+    void shutdown() {
+        if (publishers != null) {
+            publishers.shutdownNow();
+        }
+    }
+
+    public int tick() {
+        long start = System.nanoTime();
+        long budget = Math.max(0, settings.getTickBudget().toNanos());
+        int delivered = 0;
+        while (true) {
+            Batch batch = claimAndPublish(settings.getBatchSize());
+            delivered += batch.delivered;
+            if (!batch.more || System.nanoTime() - start >= budget) {
+                break;
+            }
+        }
+        recordRate(delivered, start);
+        return delivered;
     }
 
     public int poll() {
@@ -87,51 +168,186 @@ public class OutboxPoller {
     }
 
     public int poll(int batchSize) {
-        Integer delivered = transactions.execute(status -> deliver(batchSize));
-        return delivered == null ? 0 : delivered;
+        long start = System.nanoTime();
+        Batch batch = claimAndPublish(batchSize);
+        recordRate(batch.delivered, start);
+        return batch.delivered;
     }
 
-    private int deliver(int batchSize) {
-        // A hash anti-join would read every pending row before LIMIT. Nested-loop probes
-        // use idx_outbox_pending_id and idx_outbox_pending_aggregate and stop after the batch.
-        jdbc.execute("set local enable_hashjoin = off");
-        jdbc.execute("set local enable_mergejoin = off");
-        List<Claimed> claimed = jdbc.query(
-                CLAIM,
-                (rs, row) -> mapClaim(rs),
-                Timestamp.from(clock.instant()),
-                batchSize
-        );
+    private void recordRate(int delivered, long startNanos) {
+        double seconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
+        if (seconds > 0) {
+            meters.publishRate(delivered / seconds);
+        }
+    }
+
+    private Batch claimAndPublish(int batchSize) {
+        int limit = Math.max(1, batchSize);
+        List<Head> heads = findHeads(limit);
+        int index = 0;
+        int claimed = 0;
         int delivered = 0;
-        for (Claimed claimedRow : claimed) {
-            try (MdcScope ignored = MdcScope.open("correlationId", claimedRow.correlationId())
+        boolean more = false;
+        int parallelism = publishers == null ? 1 : Math.max(1, settings.getPublisherThreads());
+        while (index < heads.size() && claimed < limit) {
+            int room = limit - claimed;
+            int slots = Math.min(parallelism, Math.min(heads.size() - index, room));
+            int each = Math.min(employeeCap(), Math.max(1, (room + slots - 1) / slots));
+            List<Work> wave = new ArrayList<>(slots);
+            for (int slot = 0; slot < slots; slot++) {
+                wave.add(new Work(heads.get(index + slot), each));
+            }
+            index += slots;
+            for (Run run : runWave(wave)) {
+                claimed += run.claimed;
+                delivered += run.delivered;
+                if (run.claimed >= run.requested) {
+                    more = true;
+                }
+            }
+        }
+        if (claimed >= limit) {
+            more = true;
+        }
+        meters.claimSize(claimed);
+        return new Batch(delivered, more);
+    }
+
+    private List<Run> runWave(List<Work> wave) {
+        if (publishers == null || wave.size() == 1) {
+            List<Run> runs = new ArrayList<>(wave.size());
+            for (Work work : wave) {
+                runs.add(publishRun(work));
+            }
+            return runs;
+        }
+        List<Future<Run>> futures = new ArrayList<>(wave.size());
+        for (Work work : wave) {
+            futures.add(publishers.submit(() -> publishRun(work)));
+        }
+        List<Run> runs = new ArrayList<>(wave.size());
+        RuntimeException failure = null;
+        for (Future<Run> future : futures) {
+            try {
+                runs.add(future.get(2, TimeUnit.MINUTES));
+            } catch (ExecutionException exception) {
+                Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+                failure = cause instanceof RuntimeException runtime
+                        ? runtime
+                        : new IllegalStateException(cause);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                failure = new IllegalStateException(exception);
+            } catch (Exception exception) {
+                failure = new IllegalStateException(exception);
+            }
+        }
+        if (failure != null) {
+            throw failure;
+        }
+        return runs;
+    }
+
+    private Run publishRun(Work work) {
+        Run run = transactions.execute(status -> deliverRun(work));
+        if (run == null) {
+            return new Run(work.limit, 0, 0);
+        }
+        meters.outboxPublished(run.delivered);
+        return run;
+    }
+
+    private Run deliverRun(Work work) {
+        List<Long> locked = jdbc.query(LOCK_HEAD, (rs, row) -> rs.getLong("id"), work.head.id, work.head.tenantId);
+        if (locked.isEmpty()) {
+            return new Run(work.limit, 0, 0);
+        }
+        List<Integer> blocked = jdbc.query(
+                BLOCKED,
+                (rs, row) -> 1,
+                work.head.tenantId,
+                work.head.aggregateId,
+                work.head.id
+        );
+        if (!blocked.isEmpty()) {
+            return new Run(work.limit, 0, 0);
+        }
+        List<Claimed> rows = jdbc.query(
+                LOCK_RUN,
+                (rs, row) -> mapClaim(rs),
+                work.head.tenantId,
+                work.head.aggregateId,
+                work.head.id,
+                work.limit
+        );
+        if (rows.isEmpty() || rows.get(0).notice().eventId() != work.head.id) {
+            return new Run(work.limit, 0, 0);
+        }
+        List<Claimed> ready = new ArrayList<>();
+        Instant now = clock.instant();
+        for (Claimed row : rows) {
+            if (row.readyAt != null && row.readyAt.isAfter(now)) {
+                break;
+            }
+            ready.add(row);
+        }
+        List<Long> publishedIds = new ArrayList<>();
+        for (Claimed claimedRow : ready) {
+            try (MdcScope ignored = MdcScope.open("correlationId", claimedRow.correlationId)
                     .and("tenantId", claimedRow.notice().tenantId())
                     .and("eventId", Long.toString(claimedRow.notice().eventId()))
                     .and("employeeId", claimedRow.notice().aggregateId())) {
-            guard.beforePublish(claimedRow.notice());
-            try {
-                deactivations.handle(claimedRow.notice());
-                publisher.publish(claimedRow.notice());
-            } catch (RuntimeException exception) {
-                recordFailure(claimedRow, exception);
-                meters.outboxRetried();
-                continue;
-            }
-            jdbc.update(
-                    """
-                            update outbox
-                            set published_at = ?, status = 'PUBLISHED', next_attempt_at = null, failure_reason = null
-                            where id = ? and tenant_id = ?
-                            """,
-                    Timestamp.from(clock.instant()),
-                    claimedRow.notice().eventId(),
-                    claimedRow.notice().tenantId()
-            );
-            meters.outboxPublished();
-            delivered++;
+                guard.beforePublish(claimedRow.notice());
+                try {
+                    deactivations.handle(claimedRow.notice());
+                    publisher.publish(claimedRow.notice());
+                } catch (RuntimeException exception) {
+                    recordFailure(claimedRow, exception);
+                    meters.outboxRetried();
+                    break;
+                }
+                publishedIds.add(claimedRow.notice().eventId());
             }
         }
-        return delivered;
+        markPublished(work.head.tenantId, publishedIds);
+        return new Run(work.limit, ready.size(), publishedIds.size());
+    }
+
+    private void markPublished(String tenantId, List<Long> ids) {
+        if (ids.isEmpty()) {
+            return;
+        }
+        Long[] boxed = ids.toArray(Long[]::new);
+        int updated = jdbc.update(
+                """
+                        update outbox
+                        set published_at = ?, status = 'PUBLISHED', next_attempt_at = null, failure_reason = null
+                        where tenant_id = ? and id = any (?)
+                        """,
+                (PreparedStatement statement) -> {
+                    statement.setTimestamp(1, Timestamp.from(clock.instant()));
+                    statement.setString(2, tenantId);
+                    statement.setArray(3, statement.getConnection().createArrayOf("bigint", boxed));
+                }
+        );
+        if (updated != ids.size()) {
+            throw new IllegalStateException("Published update matched " + updated + " of " + ids.size() + " rows");
+        }
+    }
+
+    private List<Head> findHeads(int limit) {
+        Timestamp now = Timestamp.from(clock.instant());
+        return jdbc.query(
+                HEADS,
+                (rs, row) -> new Head(rs.getLong("id"), rs.getString("tenant_id"), rs.getString("aggregate_id")),
+                now,
+                limit,
+                now
+        );
+    }
+
+    private int employeeCap() {
+        return Math.max(1, settings.getEmployeeCap());
     }
 
     private void recordFailure(Claimed claimedRow, RuntimeException exception) {
@@ -215,7 +431,13 @@ public class OutboxPoller {
     }
 
     private Claimed mapClaim(ResultSet rs) throws SQLException {
-        return new Claimed(mapNotice(rs), rs.getInt("attempts"), rs.getString("correlation_id"));
+        Timestamp readyAt = rs.getTimestamp("next_attempt_at");
+        return new Claimed(
+                mapNotice(rs),
+                rs.getInt("attempts"),
+                rs.getString("correlation_id"),
+                readyAt == null ? null : readyAt.toInstant()
+        );
     }
 
     private ChangeNotice mapNotice(ResultSet rs) throws SQLException {
@@ -238,6 +460,18 @@ public class OutboxPoller {
         }
     }
 
-    private record Claimed(ChangeNotice notice, int attempts, String correlationId) {
+    private record Head(long id, String tenantId, String aggregateId) {
+    }
+
+    private record Work(Head head, int limit) {
+    }
+
+    private record Run(int requested, int claimed, int delivered) {
+    }
+
+    private record Batch(int delivered, boolean more) {
+    }
+
+    private record Claimed(ChangeNotice notice, int attempts, String correlationId, Instant readyAt) {
     }
 }

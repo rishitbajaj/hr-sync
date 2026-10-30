@@ -229,12 +229,11 @@ class PrometheusMetricsTest {
         syncEvents.ingest(List.of(new SyncEvent(
                 tenant, "emp-cab", 2L, EventType.DEACTIVATE, EmployeeFields.empty()
         )));
-        poller.poll();
-        assertThat(poller.poll()).isGreaterThan(0);
+        assertThat(poller.poll()).isEqualTo(2);
         assertThat(count("deactivation.bookings.cancelled")).isEqualTo(cancelled + 1);
         assertThat(count("deactivation.seats.freed")).isEqualTo(seats + 1);
         assertThat(count("deactivation.effect.failures")).isEqualTo(failures);
-        assertThat(count("outbox.published")).isGreaterThan(published);
+        assertThat(count("outbox.published")).isEqualTo(published + 2);
         assertThat(count("outbox.retries")).isEqualTo(retries);
 
         drain();
@@ -251,8 +250,7 @@ class PrometheusMetricsTest {
         deactivations.setAfterCancel(() -> {
             throw new IllegalStateException("effect failed");
         });
-        poller.poll();
-        poller.poll();
+        assertThat(poller.poll()).isEqualTo(1);
         assertThat(count("deactivation.effect.failures")).isEqualTo(failures + 1);
         assertThat(count("deactivation.seats.freed")).isEqualTo(seats);
         assertThat(count("outbox.retries")).isEqualTo(retries + 1);

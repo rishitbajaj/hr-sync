@@ -4,11 +4,14 @@ import com.moveinsync.hrsync.domain.FieldChannel;
 import com.moveinsync.hrsync.domain.IngestResult;
 import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.ReasonCode;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Component
 public class SyncMeters {
@@ -16,9 +19,17 @@ public class SyncMeters {
     private final MeterRegistry registry;
     private final Timer ingestDuration;
     private final Timer reconciliationDuration;
+    private final DistributionSummary claimSize;
+    private final AtomicLong publishRateMilli = new AtomicLong();
 
     public SyncMeters(MeterRegistry registry) {
         this.registry = registry;
+        this.claimSize = DistributionSummary.builder("outbox.claim.size")
+                .baseUnit("rows")
+                .register(registry);
+        Gauge.builder("outbox.publish.rate", publishRateMilli, value -> value.get() / 1000.0)
+                .baseUnit("rows")
+                .register(registry);
         this.ingestDuration = Timer.builder("ingest.duration")
                 .publishPercentileHistogram()
                 .publishPercentiles(0.5, 0.95, 0.99)
@@ -49,8 +60,24 @@ public class SyncMeters {
         }
     }
 
+    public void outboxPublished(int count) {
+        if (count > 0) {
+            registry.counter("outbox.published").increment(count);
+        }
+    }
+
+    public void claimSize(int rows) {
+        if (rows > 0) {
+            claimSize.record(rows);
+        }
+    }
+
+    public void publishRate(double rowsPerSecond) {
+        publishRateMilli.set(Math.round(rowsPerSecond * 1000.0));
+    }
+
     public void outboxPublished() {
-        registry.counter("outbox.published").increment();
+        outboxPublished(1);
     }
 
     public void outboxRetried() {

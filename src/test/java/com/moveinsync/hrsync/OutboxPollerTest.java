@@ -222,12 +222,12 @@ class OutboxPollerTest {
         publisher.clear();
 
         while (poller.poll() > 0) {
-            // drain unpublished heads in id order
+            // one employee's pending run, then the next employee
         }
 
         List<ChangeNotice> published = publisher.published();
         assertThat(published).extracting(ChangeNotice::aggregateId)
-                .containsExactly("emp-order", "emp-other", "emp-order", "emp-order");
+                .containsExactly("emp-order", "emp-order", "emp-order", "emp-other");
         List<ChangeNotice> employee = published.stream()
                 .filter(notice -> "emp-order".equals(notice.aggregateId()))
                 .toList();

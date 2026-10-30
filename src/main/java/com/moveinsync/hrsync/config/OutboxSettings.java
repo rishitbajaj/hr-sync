@@ -9,7 +9,13 @@ public class OutboxSettings {
 
     private Duration pollInterval = Duration.ofSeconds(1);
 
-    private int batchSize = 100;
+    private int batchSize = 400;
+
+    private int employeeCap = 100;
+
+    private int publisherThreads = 2;
+
+    private Duration tickBudget = Duration.ofSeconds(3);
 
     private int maxAttempts = 5;
 
@@ -31,6 +37,30 @@ public class OutboxSettings {
 
     public void setBatchSize(int batchSize) {
         this.batchSize = batchSize;
+    }
+
+    public int getEmployeeCap() {
+        return employeeCap;
+    }
+
+    public void setEmployeeCap(int employeeCap) {
+        this.employeeCap = employeeCap;
+    }
+
+    public int getPublisherThreads() {
+        return publisherThreads;
+    }
+
+    public void setPublisherThreads(int publisherThreads) {
+        this.publisherThreads = publisherThreads;
+    }
+
+    public Duration getTickBudget() {
+        return tickBudget;
+    }
+
+    public void setTickBudget(Duration tickBudget) {
+        this.tickBudget = tickBudget;
     }
 
     public int getMaxAttempts() {
