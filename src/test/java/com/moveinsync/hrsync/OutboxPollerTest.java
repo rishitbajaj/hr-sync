@@ -113,7 +113,7 @@ class OutboxPollerTest {
 
     @Test
     void appliedChangeWritesOneOutboxRowAndNoOpsWriteNone() {
-        assertThat(indexDefinition()).containsIgnoringCase("where (published_at is null)");
+        assertThat(indexDefinition()).containsIgnoringCase("where ((status)::text = 'PENDING'::text)");
 
         IngestResult created = apply(create("emp-box", 1, "Ada"));
         IngestResult renamed = apply(rename("emp-box", 3, "Ada Lovelace"));
@@ -589,7 +589,7 @@ class OutboxPollerTest {
         return jdbc.queryForObject(
                 """
                         select indexdef from pg_indexes
-                        where schemaname = 'public' and indexname = 'idx_outbox_unpublished_id'
+                        where schemaname = 'public' and indexname = 'idx_outbox_pending_aggregate'
                         """,
                 String.class
         );
