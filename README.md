@@ -161,6 +161,20 @@ Reads finished with nothing pending. The drain call returned in 0.293s and the o
 
 The other three did not finish PUBLISHED. Contention published 836 of its 86,508 new rows; after a 120s wait, 85,672 were still `PENDING`, none `FAILED`, and the oldest was 196s. Mixed added 47,860 and published 16; the drain stopped at 21.6s because the pending count (133,516) had not moved, and the oldest was 292s. Ingest added 100,740 and published none; the drain stopped at 21.9s with 234,256 pending and the oldest at 395s. The roster checks still passed. The failed check is the outbox reaching `PUBLISHED`.
 
+### Killed during ingest
+
+The database above was discarded first (`docker compose --env-file load/.env -f load/docker-compose.yml down -v`, then `up -d` and `python3 load/generate.py`), because that outbox was already stuck. The kill run was:
+
+```bash
+DRAIN_TIMEOUT=120 VUS=8 WARMUP=10s DURATION=60s WARMUP_SECONDS=10 ./load/fail-under-load.sh
+```
+
+That starts the ingest scenario, waits 25s, runs `docker kill hrsync-load-app`, lets k6 finish against the dead process, then `docker start hrsync-load-app` and checks invariants with `--allow-unacked`. A killed batch can commit rows the client never reads, so the database may show more applies than the responses do.
+
+Of 110,600 events sent, 44,800 came back in a response and 65,800 did not (the requests after the kill). The responses add up: 33,920 applied + 4,160 stale + 4,480 duplicate + 2,240 rejected = 44,800. The database added 34,221 `processed_event` rows and 34,221 outbox rows, 301 more applies than the client was told about. Version mismatches were 0. Cross-tenant rows were 0. Every load employee still had a processed row.
+
+The 120s drain after restart left 25,665 pending (none failed) and an oldest age of 199s, so that check did not yet pass `PUBLISHED`. The gauge then fell from 23,365 pending to 0 in 377s. From the first post-restart sample (33,965 pending, oldest 81s) to pending 0 was 529s. The oldest age reached 571s on the sample before the queue emptied, then read 0. A second check after that returned pending 0, oldest 0, the same row counts, and no failures.
+
 ## Verification
 
 `mvn -B test` on 2026-10-30: 181 tests, 0 failures, plus the separate benchmark. That benchmark printed `reconciliation benchmark rows=200000 elapsedMs=2571 peakHeapBytes=86820712 maxHeapBytes=268435456`.
