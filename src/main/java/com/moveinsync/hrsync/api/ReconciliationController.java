@@ -5,6 +5,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
@@ -20,8 +21,11 @@ public class ReconciliationController {
     }
 
     @PostMapping(value = "/reconciliation/runs", consumes = "text/csv")
-    public ReconciliationRunResponse start(HttpServletRequest request) throws IOException {
-        return reconciliation.run(request.getInputStream());
+    public ReconciliationRunResponse start(
+            @RequestParam(name = "tenantId", required = false) String tenantId,
+            HttpServletRequest request
+    ) throws IOException {
+        return reconciliation.run(tenantId, request.getInputStream());
     }
 
     @GetMapping("/reconciliation/runs/{id}")

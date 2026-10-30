@@ -1,5 +1,7 @@
 package com.moveinsync.hrsync.api;
 
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 public record ReconciliationRunResponse(
@@ -15,6 +17,9 @@ public record ReconciliationRunResponse(
         int exportRowCount,
         Double missingRatio,
         Double threshold,
-        String haltReason
+        String haltReason,
+        int rejected,
+        Map<String, Integer> rejectedByReason,
+        List<Rejection> rejections
 ) {
 }

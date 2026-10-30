@@ -1,9 +1,12 @@
 package com.moveinsync.hrsync.service;
 
 import com.moveinsync.hrsync.api.ReconciliationRunResponse;
+import com.moveinsync.hrsync.api.Rejection;
 import com.moveinsync.hrsync.config.ReconciliationSettings;
 import com.moveinsync.hrsync.domain.EmployeeFields;
 import com.moveinsync.hrsync.domain.EventType;
+import com.moveinsync.hrsync.domain.IngestResult;
+import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.RosterHash;
 import com.moveinsync.hrsync.domain.SyncEvent;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -34,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -42,6 +46,8 @@ import java.util.UUID;
 public class ReconciliationService {
 
     static final String HALT_REASON = "MISSING_RATIO_EXCEEDED";
+
+    private static final int EXPORT_ID_BATCH = 1000;
 
     private static final Logger log = LoggerFactory.getLogger(ReconciliationService.class);
 
@@ -80,11 +86,14 @@ public class ReconciliationService {
         this.meters = meters;
     }
 
-    public ReconciliationRunResponse run(InputStream csv) {
+    public ReconciliationRunResponse run(String tenantId, InputStream csv) {
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new ReconciliationException("tenantId is required");
+        }
         Path temp = tempFile();
         try {
             copy(csv, temp);
-            return reconcile(temp);
+            return reconcile(temp, tenantId);
         } finally {
             delete(temp);
         }
@@ -125,7 +134,7 @@ public class ReconciliationService {
                 """
                         select id, tenant_id, status, unchanged_count, create_count, update_count,
                                deactivate_count, missing_count, active_employee_count, export_row_count,
-                               missing_ratio, threshold, halt_reason
+                               missing_ratio, threshold, halt_reason, rejected_count
                         from import_run
                         where id = ?
                         """,
@@ -138,8 +147,7 @@ public class ReconciliationService {
         return rows.get(0);
     }
 
-    private ReconciliationRunResponse reconcile(Path temp) {
-        String tenantId = declaredTenant(temp);
+    private ReconciliationRunResponse reconcile(Path temp, String tenantId) {
         UUID id = insertRun(tenantId);
         try {
             return reconcileClaimed(temp, tenantId, id);
@@ -152,7 +160,7 @@ public class ReconciliationService {
     private ReconciliationRunResponse reconcileClaimed(Path temp, String tenantId, UUID id) {
         int bucketCount = bucketCount();
         BucketDigest[] exported = digests(bucketCount);
-        ExportScan scan = scanExport(temp, exported);
+        ExportScan scan = scanExport(temp, exported, tenantId);
         BucketDigest[] stored = digests(bucketCount);
         scanStore(tenantId, (employeeId, version, name, email, phone, manager, office, shift) ->
                 stored[RosterHash.bucket(employeeId, bucketCount)].add(
@@ -176,11 +184,11 @@ public class ReconciliationService {
                 : loadHeads(tenantId, dirty, bucketCount);
         hooks.beforeApply();
         Diff diff = dirty.isEmpty()
-                ? new Diff(unchanged, 0, 0, 0)
+                ? new Diff(unchanged, 0, 0, 0, List.of())
                 : classify(temp, tenantId, dirty, bucketCount, heads, unchanged);
-        if (exceedsMissingRatio(diff.toDeactivate(), activeCount)) {
+        if (exceedsMissingRatio(diff.missing(), activeCount)) {
             saveCandidates(id, heads);
-            finish(id, "HALTED", diff, activeCount, scan.rowCount(), HALT_REASON);
+            finish(id, "HALTED", diff, 0, activeCount, scan.rowCount(), HALT_REASON);
             meters.counter("reconciliation.halted", "reason", HALT_REASON).increment();
             ReconciliationRunResponse halted = get(id);
             log.warn(
@@ -195,11 +203,11 @@ public class ReconciliationService {
             );
             return halted;
         }
-        deactivateMissing(tenantId, heads);
-        finish(id, "COMPLETED", diff, activeCount, scan.rowCount(), null);
+        int deactivated = deactivateMissing(tenantId, heads);
+        finish(id, "COMPLETED", diff, deactivated, activeCount, scan.rowCount(), null);
         ReconciliationRunResponse response = get(id);
         log.info(
-                "reconciliation runId={} tenantId={} status={} unchanged={} toCreate={} toUpdate={} toDeactivate={} missingCount={} activeCount={} exportRowCount={}",
+                "reconciliation runId={} tenantId={} status={} unchanged={} toCreate={} toUpdate={} toDeactivate={} rejected={} missingCount={} activeCount={} exportRowCount={}",
                 response.id(),
                 response.tenantId(),
                 response.status(),
@@ -207,23 +215,12 @@ public class ReconciliationService {
                 response.toCreate(),
                 response.toUpdate(),
                 response.toDeactivate(),
+                response.rejected(),
                 response.missingCount(),
                 response.activeCount(),
                 response.exportRowCount()
         );
         return response;
-    }
-
-    private String declaredTenant(Path temp) {
-        try (InputStream input = Files.newInputStream(temp)) {
-            RosterRow first = ExportCsv.first(input);
-            if (first == null) {
-                throw new ReconciliationException("Reconciliation export has no rows");
-            }
-            return first.tenantId();
-        } catch (IOException exception) {
-            throw new ReconciliationException("Could not read reconciliation export");
-        }
     }
 
     private void markFailed(UUID id, String tenantId, RuntimeException exception) {
@@ -255,10 +252,11 @@ public class ReconciliationService {
         int[] creates = {0};
         int[] updates = {0};
         int[] matched = {0};
+        List<Rejection> rejections = new ArrayList<>();
         try (InputStream input = Files.newInputStream(temp)) {
             ExportCsv.parse(input, row -> {
                 if (!tenantId.equals(row.tenantId())) {
-                    throw new ReconciliationException("Reconciliation export contains more than one tenant");
+                    throw new ReconciliationException("Reconciliation export contains a row for a different tenant");
                 }
                 int bucket = RosterHash.bucket(row.employeeId(), bucketCount);
                 if (!dirty.get(bucket)) {
@@ -267,8 +265,7 @@ public class ReconciliationService {
                 byte[] hash = hash(row);
                 Head head = heads.get(row.employeeId());
                 if (head == null) {
-                    creates[0]++;
-                    apply(row, EventType.CREATE);
+                    countApplied(apply(row, EventType.CREATE), creates, rejections);
                     return;
                 }
                 head.seen = true;
@@ -276,8 +273,7 @@ public class ReconciliationService {
                     matched[0]++;
                     return;
                 }
-                updates[0]++;
-                apply(row, EventType.UPDATE);
+                countApplied(apply(row, EventType.UPDATE), updates, rejections);
             });
         } catch (IOException exception) {
             throw new ReconciliationException("Could not read reconciliation export");
@@ -288,7 +284,17 @@ public class ReconciliationService {
                 missing++;
             }
         }
-        return new Diff(unchanged + matched[0], creates[0], updates[0], missing);
+        return new Diff(unchanged + matched[0], creates[0], updates[0], missing, rejections);
+    }
+
+    private static void countApplied(IngestResult result, int[] applied, List<Rejection> rejections) {
+        if (result.outcome() == Outcome.APPLIED) {
+            applied[0]++;
+            return;
+        }
+        if (result.outcome() == Outcome.REJECTED) {
+            rejections.add(new Rejection(result.employeeId(), result.reasonCode().name()));
+        }
     }
 
     private void saveCandidates(UUID runId, Map<String, Head> heads) {
@@ -344,20 +350,22 @@ public class ReconciliationService {
         });
     }
 
-    private void deactivateMissing(String tenantId, Map<String, Head> heads) {
+    private int deactivateMissing(String tenantId, Map<String, Head> heads) {
+        int applied = 0;
         for (Head head : heads.values()) {
-            if (!head.seen) {
-                changes.deactivateIfUnchanged(tenantId, head.employeeId, head.hrVersion);
+            if (!head.seen && changes.deactivateIfUnchanged(tenantId, head.employeeId, head.hrVersion)) {
+                applied++;
             }
         }
+        return applied;
     }
 
     private boolean exceedsMissingRatio(int missing, int active) {
         return active > 0 && (double) missing / active > settings.getMaxMissingRatio();
     }
 
-    private void apply(RosterRow row, EventType type) {
-        syncEvents.ingest(List.of(new SyncEvent(
+    private IngestResult apply(RosterRow row, EventType type) {
+        return syncEvents.ingest(List.of(new SyncEvent(
                 row.tenantId(),
                 row.employeeId(),
                 row.sourceVersion(),
@@ -372,29 +380,72 @@ public class ReconciliationService {
                         null,
                         row.shift()
                 )
-        )));
+        ))).get(0);
     }
 
-    private ExportScan scanExport(Path temp, BucketDigest[] buckets) {
-        String[] tenant = new String[1];
-        int[] rows = {0};
-        try (InputStream input = Files.newInputStream(temp)) {
-            ExportCsv.parse(input, row -> {
-                if (tenant[0] == null) {
-                    tenant[0] = row.tenantId();
-                } else if (!tenant[0].equals(row.tenantId())) {
-                    throw new ReconciliationException("Reconciliation export contains more than one tenant");
-                }
-                buckets[RosterHash.bucket(row.employeeId(), buckets.length)].add(hash(row));
-                rows[0]++;
-            });
-        } catch (IOException exception) {
+    private ExportScan scanExport(Path temp, BucketDigest[] buckets, String tenantId) {
+        ExportScan scan = reads.execute(status -> {
+            jdbc.execute(
+                    "create temp table recon_export_employee (employee_id varchar(128) not null) on commit drop"
+            );
+            int[] rows = {0};
+            List<String> batch = new ArrayList<>(EXPORT_ID_BATCH);
+            try (InputStream input = Files.newInputStream(temp)) {
+                ExportCsv.parse(input, row -> {
+                    if (!tenantId.equals(row.tenantId())) {
+                        throw new ReconciliationException(
+                                "Reconciliation export contains a row for a different tenant"
+                        );
+                    }
+                    buckets[RosterHash.bucket(row.employeeId(), buckets.length)].add(hash(row));
+                    rows[0]++;
+                    batch.add(row.employeeId());
+                    if (batch.size() == EXPORT_ID_BATCH) {
+                        insertExportIds(batch);
+                        batch.clear();
+                    }
+                });
+            } catch (IOException exception) {
+                throw new ReconciliationException("Could not read reconciliation export");
+            }
+            if (!batch.isEmpty()) {
+                insertExportIds(batch);
+            }
+            if (rows[0] == 0) {
+                throw new ReconciliationException("Reconciliation export has no rows");
+            }
+            Long duplicateIds = jdbc.queryForObject(
+                    """
+                            select count(*) from (
+                                select employee_id
+                                from recon_export_employee
+                                group by employee_id
+                                having count(*) > 1
+                            ) duplicates
+                            """,
+                    Long.class
+            );
+            if (duplicateIds != null && duplicateIds > 0) {
+                String noun = duplicateIds == 1 ? "duplicate employee id" : "duplicate employee ids";
+                throw new ReconciliationException(
+                        "Reconciliation export contains " + duplicateIds + " " + noun
+                );
+            }
+            return new ExportScan(tenantId, rows[0]);
+        });
+        if (scan == null) {
             throw new ReconciliationException("Could not read reconciliation export");
         }
-        if (tenant[0] == null) {
-            throw new ReconciliationException("Reconciliation export has no rows");
-        }
-        return new ExportScan(tenant[0], rows[0]);
+        return scan;
+    }
+
+    private void insertExportIds(List<String> employeeIds) {
+        jdbc.batchUpdate(
+                "insert into recon_export_employee (employee_id) values (?)",
+                employeeIds,
+                employeeIds.size(),
+                (statement, employeeId) -> statement.setString(1, employeeId)
+        );
     }
 
     private Map<String, Head> loadHeads(String tenantId, BitSet dirty, int bucketCount) {
@@ -476,11 +527,20 @@ public class ReconciliationService {
         return false;
     }
 
-    private void finish(UUID id, String status, Diff diff, int activeCount, int exportRowCount, String haltReason) {
+    private void finish(
+            UUID id,
+            String status,
+            Diff diff,
+            int deactivated,
+            int activeCount,
+            int exportRowCount,
+            String haltReason
+    ) {
         BigDecimal ratio = activeCount == 0
                 ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
-                : BigDecimal.valueOf(diff.toDeactivate()).divide(BigDecimal.valueOf(activeCount), 6, RoundingMode.HALF_UP);
+                : BigDecimal.valueOf(diff.missing()).divide(BigDecimal.valueOf(activeCount), 6, RoundingMode.HALF_UP);
         BigDecimal threshold = BigDecimal.valueOf(settings.getMaxMissingRatio()).setScale(6, RoundingMode.HALF_UP);
+        saveRejections(id, diff.rejections());
         jdbc.update(
                 """
                         update import_run
@@ -493,6 +553,7 @@ public class ReconciliationService {
                             update_count = ?,
                             deactivate_count = ?,
                             missing_count = ?,
+                            rejected_count = ?,
                             missing_ratio = ?,
                             threshold = ?,
                             halt_reason = ?
@@ -505,8 +566,9 @@ public class ReconciliationService {
                 diff.unchanged(),
                 diff.toCreate(),
                 diff.toUpdate(),
-                diff.toDeactivate(),
-                diff.toDeactivate(),
+                deactivated,
+                diff.missing(),
+                diff.rejections().size(),
                 ratio,
                 threshold,
                 haltReason,
@@ -514,9 +576,27 @@ public class ReconciliationService {
         );
     }
 
+    private void saveRejections(UUID id, List<Rejection> rejections) {
+        if (rejections.isEmpty()) {
+            return;
+        }
+        jdbc.batchUpdate(
+                "insert into import_run_rejection (run_id, employee_id, reason) values (?, ?, ?)",
+                rejections,
+                rejections.size(),
+                (statement, rejection) -> {
+                    statement.setObject(1, id);
+                    statement.setString(2, rejection.employeeId());
+                    statement.setString(3, rejection.reason());
+                }
+        );
+    }
+
     private ReconciliationRunResponse mapRun(ResultSet rs) throws SQLException {
+        UUID id = rs.getObject("id", UUID.class);
+        List<Rejection> rejections = rejections(id);
         return new ReconciliationRunResponse(
-                rs.getObject("id", UUID.class),
+                id,
                 rs.getString("tenant_id"),
                 rs.getString("status"),
                 number(rs, "unchanged_count"),
@@ -528,8 +608,32 @@ public class ReconciliationService {
                 number(rs, "export_row_count"),
                 decimal(rs, "missing_ratio"),
                 decimal(rs, "threshold"),
-                rs.getString("halt_reason")
+                rs.getString("halt_reason"),
+                number(rs, "rejected_count"),
+                reasons(rejections),
+                rejections
         );
+    }
+
+    private List<Rejection> rejections(UUID id) {
+        return jdbc.query(
+                """
+                        select employee_id, reason
+                        from import_run_rejection
+                        where run_id = ?
+                        order by employee_id
+                        """,
+                (rs, row) -> new Rejection(rs.getString("employee_id"), rs.getString("reason")),
+                id
+        );
+    }
+
+    private static Map<String, Integer> reasons(List<Rejection> rejections) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (Rejection rejection : rejections) {
+            counts.merge(rejection.reason(), 1, Integer::sum);
+        }
+        return counts;
     }
 
     private static Double decimal(ResultSet rs, String column) throws SQLException {
@@ -612,7 +716,13 @@ public class ReconciliationService {
     private record ExportScan(String tenantId, int rowCount) {
     }
 
-    private record Diff(int unchanged, int toCreate, int toUpdate, int toDeactivate) {
+    private record Diff(
+            int unchanged,
+            int toCreate,
+            int toUpdate,
+            int missing,
+            List<Rejection> rejections
+    ) {
     }
 
     private static final class Head {

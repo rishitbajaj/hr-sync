@@ -63,3 +63,9 @@ Deactivate version 4 arrives for employee `emp-tomb-d` before any create. The ro
 Employee `emp-own` has pickup point `Gate 4` and special assistance `wheelchair` at transport version 1. An HR update version 2 changes the name and also sends a pickup point and special-assistance value. The name and `hr_version` change. The pickup point, special assistance, and `transport_version` do not.
 
 One batch for employee `emp-batch` contains versions 1, 5, 3, 4, 2 in that request order. They are applied in version order. The stored row is the version 5 state, and the response lists the results in the original request order.
+
+## Reconciliation export
+
+`POST /reconciliation/runs?tenantId=...` requires `tenantId`. A file that contains a row for any other tenant is rejected with HTTP 400 before any employee is written. The run is marked `FAILED`, so a later file for that tenant can start.
+
+An employee id that appears more than once in one export rejects the whole file with HTTP 400. The message names how many employee ids were repeated (`1 duplicate employee id`, or `N duplicate employee ids`). It does not name the people. The ids are loaded into a Postgres temporary table in batches and counted there, so the JVM does not keep the id set. A repeated id is not applied, and `toCreate` / `toUpdate` stay at the number of changes whose ingest result was `APPLIED`. A rejected row is counted on the run by reason code, with the employee id and the reason only.
