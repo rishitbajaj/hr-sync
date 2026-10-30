@@ -385,6 +385,15 @@ class ReconciliationRunTest {
         assertThat(wrongPassword.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(deactivated(tenant)).isZero();
 
+        ResponseEntity<String> admin = restTemplate.exchange(
+                url,
+                HttpMethod.POST,
+                new HttpEntity<>(adminHeaders(tenant)),
+                String.class
+        );
+        assertThat(admin.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(deactivated(tenant)).isZero();
+
         assertThat(syncEvents.ingest(List.of(new SyncEvent(
                 tenant,
                 "emp-3",
