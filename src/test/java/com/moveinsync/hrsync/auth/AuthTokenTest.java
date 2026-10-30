@@ -1,5 +1,6 @@
 package com.moveinsync.hrsync.auth;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.config.AuthSettings;
 import org.junit.jupiter.api.Test;
@@ -95,7 +96,15 @@ class AuthTokenTest {
             login("locked-user", "nope");
             ResponseEntity<String> locked = login("locked-user", PASSWORD);
             assertThat(locked.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-            assertThat(locked.getBody()).isEqualTo(wrong.getBody());
+            JsonNode wrongBody = objectMapper.readTree(wrong.getBody());
+            JsonNode lockedBody = objectMapper.readTree(locked.getBody());
+            assertThat(lockedBody.get("error")).isEqualTo(wrongBody.get("error"));
+            assertThat(lockedBody.get("message").asText()).isEqualTo("Invalid username or password");
+            assertThat(lockedBody.get("message")).isEqualTo(wrongBody.get("message"));
+            assertThat(wrongBody.get("correlationId").asText()).isNotBlank();
+            assertThat(lockedBody.get("correlationId").asText())
+                    .isNotBlank()
+                    .isNotEqualTo(wrongBody.get("correlationId").asText());
             assertThat(output).doesNotContain(PASSWORD).doesNotContain("nope");
         } finally {
             settings.setMaxLoginFailures(5);

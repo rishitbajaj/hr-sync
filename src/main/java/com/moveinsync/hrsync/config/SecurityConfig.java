@@ -3,6 +3,7 @@ package com.moveinsync.hrsync.config;
 import com.moveinsync.hrsync.auth.JwtAuthenticationFilter;
 import com.moveinsync.hrsync.auth.JwtService;
 import com.moveinsync.hrsync.metrics.SyncMeters;
+import com.moveinsync.hrsync.observability.CorrelationIds;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -20,8 +21,8 @@ import java.nio.charset.StandardCharsets;
 @Configuration
 public class SecurityConfig {
 
-    static final String UNAUTHORIZED = "{\"error\":\"UNAUTHORIZED\",\"message\":\"Authentication required\"}";
-    static final String FORBIDDEN = "{\"error\":\"FORBIDDEN\",\"message\":\"Forbidden\"}";
+    static final String UNAUTHORIZED = "Authentication required";
+    static final String FORBIDDEN = "Forbidden";
 
     @Bean
     SecurityFilterChain security(HttpSecurity http, JwtService tokens, SyncMeters meters) throws Exception {
@@ -44,8 +45,10 @@ public class SecurityConfig {
                     auth.anyRequest().denyAll();
                 })
                 .exceptionHandling(errors -> errors
-                        .authenticationEntryPoint((request, response, exception) -> write(response, 401, UNAUTHORIZED))
-                        .accessDeniedHandler((request, response, exception) -> write(response, 403, FORBIDDEN)))
+                        .authenticationEntryPoint((request, response, exception) ->
+                                write(response, 401, "UNAUTHORIZED", UNAUTHORIZED))
+                        .accessDeniedHandler((request, response, exception) ->
+                                write(response, 403, "FORBIDDEN", FORBIDDEN)))
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .addFilterBefore(new JwtAuthenticationFilter(tokens, meters), UsernamePasswordAuthenticationFilter.class)
                 .build();
@@ -56,10 +59,18 @@ public class SecurityConfig {
         return new BCryptPasswordEncoder();
     }
 
-    private static void write(HttpServletResponse response, int status, String body) throws java.io.IOException {
+    private static void write(HttpServletResponse response, int status, String code, String message) throws java.io.IOException {
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        response.getWriter().write(body);
+        response.getWriter().write(body(code, message));
+    }
+
+    private static String body(String code, String message) {
+        String correlationId = CorrelationIds.current();
+        if (correlationId == null) {
+            return "{\"error\":\"" + code + "\",\"message\":\"" + message + "\"}";
+        }
+        return "{\"error\":\"" + code + "\",\"message\":\"" + message + "\",\"correlationId\":\"" + correlationId + "\"}";
     }
 }

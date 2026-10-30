@@ -6,6 +6,7 @@ import com.moveinsync.hrsync.domain.IngestResult;
 import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.SyncEvent;
 import com.moveinsync.hrsync.metrics.SyncMeters;
+import com.moveinsync.hrsync.observability.MdcScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -42,6 +43,12 @@ public class SyncEventService {
     }
 
     private void logResult(IngestResult result) {
+        try (MdcScope ignored = MdcScope.open("tenantId", result.tenantId()).and("employeeId", result.employeeId())) {
+            logResultInScope(result);
+        }
+    }
+
+    private void logResultInScope(IngestResult result) {
         if (result.outcome() == Outcome.APPLIED) {
             log.info(
                     "applied tenantId={} employeeId={} sourceVersion={}",

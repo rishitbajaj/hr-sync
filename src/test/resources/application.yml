@@ -3,6 +3,11 @@ spring:
     scheduling:
       enabled: false
 
+logging:
+  structured:
+    format:
+      console: logstash
+
 management:
   endpoint:
     prometheus:
@@ -18,6 +23,8 @@ management:
 hr-sync:
   auth:
     jwt-secret: 0123456789abcdef0123456789abcdef
+  metrics:
+    sample-interval: 1h
   outbox:
     poll-interval: 1h
     batch-size: 20

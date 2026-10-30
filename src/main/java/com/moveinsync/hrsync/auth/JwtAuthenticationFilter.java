@@ -5,6 +5,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import com.moveinsync.hrsync.metrics.SyncMeters;
+import com.moveinsync.hrsync.observability.CorrelationIds;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -16,7 +17,7 @@ import java.util.List;
 
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
-    static final String UNAUTHORIZED = "{\"error\":\"UNAUTHORIZED\",\"message\":\"Invalid token\"}";
+    static final String UNAUTHORIZED_MESSAGE = "Invalid token";
 
     private final JwtService tokens;
     private final SyncMeters meters;
@@ -67,6 +68,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("application/json");
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        response.getWriter().write(UNAUTHORIZED);
+        String correlationId = CorrelationIds.current();
+        String body = correlationId == null
+                ? "{\"error\":\"UNAUTHORIZED\",\"message\":\"" + UNAUTHORIZED_MESSAGE + "\"}"
+                : "{\"error\":\"UNAUTHORIZED\",\"message\":\"" + UNAUTHORIZED_MESSAGE + "\",\"correlationId\":\""
+                + correlationId + "\"}";
+        response.getWriter().write(body);
     }
 }

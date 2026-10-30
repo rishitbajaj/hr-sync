@@ -38,6 +38,9 @@ management:
           - prometheus
 
 logging:
+  structured:
+    format:
+      console: logstash
   level:
     org.hibernate.SQL: warn
     org.hibernate.orm.jdbc.bind: warn

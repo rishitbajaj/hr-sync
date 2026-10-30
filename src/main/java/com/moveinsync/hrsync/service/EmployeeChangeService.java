@@ -3,6 +3,7 @@ package com.moveinsync.hrsync.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.domain.ChangeCommand;
+import com.moveinsync.hrsync.observability.CorrelationIds;
 import com.moveinsync.hrsync.domain.ChangedFields;
 import com.moveinsync.hrsync.domain.ChangeStore;
 import com.moveinsync.hrsync.domain.Decision;
@@ -69,8 +70,8 @@ public class EmployeeChangeService implements ChangeStore {
             """;
 
     private static final String INSERT_OUTBOX = """
-            insert into outbox (tenant_id, aggregate_id, event_type, payload, created_at, next_attempt_at)
-            values (?, ?, ?, cast(? as jsonb), ?, ?)
+            insert into outbox (tenant_id, aggregate_id, event_type, payload, created_at, next_attempt_at, correlation_id)
+            values (?, ?, ?, cast(? as jsonb), ?, ?, ?)
             """;
 
     private final EmployeeChangeApplier applier;
@@ -253,7 +254,8 @@ public class EmployeeChangeService implements ChangeStore {
                 OutboxEvents.EMPLOYEE_DEACTIVATED,
                 json,
                 now,
-                now
+                now,
+                CorrelationIds.current()
         );
     }
 
@@ -279,7 +281,8 @@ public class EmployeeChangeService implements ChangeStore {
                 command.type().name(),
                 json,
                 now,
-                now
+                now,
+                CorrelationIds.current()
         );
     }
 

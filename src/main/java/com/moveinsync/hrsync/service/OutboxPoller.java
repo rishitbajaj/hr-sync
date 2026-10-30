@@ -6,6 +6,7 @@ import com.moveinsync.hrsync.config.OutboxSettings;
 import com.moveinsync.hrsync.domain.ChangeNotice;
 import com.moveinsync.hrsync.domain.EventPublisher;
 import com.moveinsync.hrsync.metrics.SyncMeters;
+import com.moveinsync.hrsync.observability.MdcScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -29,7 +30,7 @@ public class OutboxPoller {
 
     private static final String CLAIM = """
             select o.id, o.tenant_id, o.aggregate_id, o.event_type, o.payload::text as payload, o.attempts,
-                   o.created_at
+                   o.created_at, o.correlation_id
             from outbox o
             where o.status = 'PENDING'
               and o.next_attempt_at <= ?
@@ -103,6 +104,10 @@ public class OutboxPoller {
         );
         int delivered = 0;
         for (Claimed claimedRow : claimed) {
+            try (MdcScope ignored = MdcScope.open("correlationId", claimedRow.correlationId())
+                    .and("tenantId", claimedRow.notice().tenantId())
+                    .and("eventId", Long.toString(claimedRow.notice().eventId()))
+                    .and("employeeId", claimedRow.notice().aggregateId())) {
             guard.beforePublish(claimedRow.notice());
             try {
                 deactivations.handle(claimedRow.notice());
@@ -124,6 +129,7 @@ public class OutboxPoller {
             );
             meters.outboxPublished();
             delivered++;
+            }
         }
         return delivered;
     }
@@ -209,7 +215,7 @@ public class OutboxPoller {
     }
 
     private Claimed mapClaim(ResultSet rs) throws SQLException {
-        return new Claimed(mapNotice(rs), rs.getInt("attempts"));
+        return new Claimed(mapNotice(rs), rs.getInt("attempts"), rs.getString("correlation_id"));
     }
 
     private ChangeNotice mapNotice(ResultSet rs) throws SQLException {
@@ -232,6 +238,6 @@ public class OutboxPoller {
         }
     }
 
-    private record Claimed(ChangeNotice notice, int attempts) {
+    private record Claimed(ChangeNotice notice, int attempts, String correlationId) {
     }
 }

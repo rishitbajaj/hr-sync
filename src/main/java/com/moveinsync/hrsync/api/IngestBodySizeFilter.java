@@ -51,11 +51,13 @@ public class IngestBodySizeFilter extends OncePerRequestFilter {
     private void writeTooLarge(HttpServletResponse response) throws IOException {
         response.setStatus(413);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-        response.getWriter().write(
-                "{\"error\":\"REQUEST_TOO_LARGE\",\"message\":\"Request body exceeds the maximum of "
-                        + limits.getMaxBodyBytes()
-                        + " bytes\"}"
-        );
+        String message = "Request body exceeds the maximum of " + limits.getMaxBodyBytes() + " bytes";
+        String correlationId = com.moveinsync.hrsync.observability.CorrelationIds.current();
+        String body = correlationId == null
+                ? "{\"error\":\"REQUEST_TOO_LARGE\",\"message\":\"" + message + "\"}"
+                : "{\"error\":\"REQUEST_TOO_LARGE\",\"message\":\"" + message + "\",\"correlationId\":\""
+                + correlationId + "\"}";
+        response.getWriter().write(body);
     }
 
     private static boolean isIngestPost(HttpServletRequest request) {
