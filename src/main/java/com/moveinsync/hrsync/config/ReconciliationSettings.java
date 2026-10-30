@@ -9,6 +9,8 @@ public class ReconciliationSettings {
 
     private double maxMissingRatio = 0.30;
 
+    private String operatorPassword = "change-me";
+
     public int getBucketCount() {
         return bucketCount;
     }
@@ -23,5 +25,13 @@ public class ReconciliationSettings {
 
     public void setMaxMissingRatio(double maxMissingRatio) {
         this.maxMissingRatio = maxMissingRatio;
+    }
+
+    public String getOperatorPassword() {
+        return operatorPassword;
+    }
+
+    public void setOperatorPassword(String operatorPassword) {
+        this.operatorPassword = operatorPassword;
     }
 }

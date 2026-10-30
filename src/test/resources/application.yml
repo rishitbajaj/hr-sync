@@ -10,6 +10,8 @@ management:
         include: health,metrics
 
 hr-sync:
+  reconciliation:
+    operator-password: test-operator
   outbox:
     poll-interval: 1h
     batch-size: 20

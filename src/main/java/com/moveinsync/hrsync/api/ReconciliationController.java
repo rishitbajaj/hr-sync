@@ -28,4 +28,9 @@ public class ReconciliationController {
     public ReconciliationRunResponse get(@PathVariable UUID id) {
         return reconciliation.get(id);
     }
+
+    @PostMapping("/reconciliation/runs/{id}/approve")
+    public ReconciliationRunResponse approve(@PathVariable UUID id) {
+        return reconciliation.approve(id);
+    }
 }

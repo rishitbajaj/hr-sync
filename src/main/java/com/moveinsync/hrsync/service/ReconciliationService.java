@@ -9,6 +9,7 @@ import com.moveinsync.hrsync.domain.SyncEvent;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.stereotype.Service;
@@ -27,6 +28,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.HashMap;
@@ -86,6 +88,36 @@ public class ReconciliationService {
         }
     }
 
+    public ReconciliationRunResponse approve(UUID id) {
+        reads.executeWithoutResult(status -> {
+            List<String> current = jdbc.query(
+                    "select status from import_run where id = ? for update",
+                    (rs, row) -> rs.getString("status"),
+                    id
+            );
+            if (current.isEmpty()) {
+                throw new ReconciliationNotFoundException();
+            }
+            if (!"HALTED".equals(current.get(0))) {
+                throw new ReconciliationConflictException();
+            }
+            applySavedDeactivations(id);
+            jdbc.update(
+                    "update import_run set status = 'APPROVED', finished_at = ? where id = ?",
+                    Timestamp.from(clock.instant()),
+                    id
+            );
+        });
+        ReconciliationRunResponse response = get(id);
+        log.info(
+                "reconciliation approved runId={} tenantId={} missingCount={}",
+                response.id(),
+                response.tenantId(),
+                response.missingCount()
+        );
+        return response;
+    }
+
     public ReconciliationRunResponse get(UUID id) {
         List<ReconciliationRunResponse> rows = jdbc.query(
                 """
@@ -136,6 +168,7 @@ public class ReconciliationService {
                     ? new Diff(unchanged, 0, 0, 0)
                     : classify(temp, scan.tenantId(), dirty, bucketCount, heads, unchanged);
             if (exceedsMissingRatio(diff.toDeactivate(), activeCount)) {
+                saveCandidates(id, heads);
                 finish(id, "HALTED", diff, activeCount, scan.rowCount(), HALT_REASON);
                 meters.counter("reconciliation.halted", "reason", HALT_REASON).increment();
                 ReconciliationRunResponse halted = get(id);
@@ -225,6 +258,59 @@ public class ReconciliationService {
             }
         }
         return new Diff(unchanged + matched[0], creates[0], updates[0], missing);
+    }
+
+    private void saveCandidates(UUID runId, Map<String, Head> heads) {
+        List<Head> missing = new ArrayList<>();
+        for (Head head : heads.values()) {
+            if (!head.seen) {
+                missing.add(head);
+            }
+        }
+        int batch = 500;
+        String sql = """
+                insert into import_run_deactivation (run_id, employee_id, hr_version)
+                values (?, ?, ?)
+                """;
+        for (int start = 0; start < missing.size(); start += batch) {
+            int offset = start;
+            int size = Math.min(batch, missing.size() - start);
+            jdbc.batchUpdate(sql, new BatchPreparedStatementSetter() {
+                @Override
+                public void setValues(PreparedStatement statement, int index) throws SQLException {
+                    Head head = missing.get(offset + index);
+                    statement.setObject(1, runId);
+                    statement.setString(2, head.employeeId);
+                    statement.setLong(3, head.hrVersion);
+                }
+
+                @Override
+                public int getBatchSize() {
+                    return size;
+                }
+            });
+        }
+    }
+
+    private void applySavedDeactivations(UUID runId) {
+        String tenantId = jdbc.queryForObject(
+                "select tenant_id from import_run where id = ?",
+                String.class,
+                runId
+        );
+        jdbc.query(connection -> {
+            PreparedStatement statement = connection.prepareStatement(
+                    "select employee_id, hr_version from import_run_deactivation where run_id = ?"
+            );
+            statement.setFetchSize(500);
+            statement.setObject(1, runId);
+            return statement;
+        }, (ResultSetExtractor<Void>) rs -> {
+            while (rs.next()) {
+                changes.deactivateIfUnchanged(tenantId, rs.getString("employee_id"), rs.getLong("hr_version"));
+            }
+            return null;
+        });
     }
 
     private void deactivateMissing(String tenantId, Map<String, Head> heads) {

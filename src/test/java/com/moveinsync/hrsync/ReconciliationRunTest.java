@@ -350,6 +350,54 @@ class ReconciliationRunTest {
         assertThat(status(loose, "emp-0")).isEqualTo("ACTIVE");
     }
 
+    @Test
+    void approvalAppliesDeactivationsOnce() throws Exception {
+        settings.setMaxMissingRatio(0.10);
+        String tenant = "recon-approve";
+        seedRoster(tenant, 4);
+        JsonNode halted = postCsv(csv(tenant, exportFirst(tenant, 2)));
+        assertThat(halted.get("status").asText()).isEqualTo("HALTED");
+        assertThat(halted.get("missingCount").asInt()).isEqualTo(2);
+        String url = "/reconciliation/runs/" + halted.get("id").asText() + "/approve";
+
+        ResponseEntity<String> anonymous = restTemplate.postForEntity(url, null, String.class);
+        assertThat(anonymous.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        ResponseEntity<String> wrongPassword = restTemplate.withBasicAuth("operator", "nope")
+                .postForEntity(url, null, String.class);
+        assertThat(wrongPassword.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(deactivated(tenant)).isZero();
+
+        assertThat(syncEvents.ingest(List.of(new SyncEvent(
+                tenant,
+                "emp-3",
+                2L,
+                EventType.UPDATE,
+                new EmployeeFields("Kept", null, null, null, null, null, null, null)
+        ))).get(0).outcome()).isEqualTo(Outcome.APPLIED);
+
+        ResponseEntity<String> approved = restTemplate.withBasicAuth("operator", "test-operator")
+                .postForEntity(url, null, String.class);
+        assertThat(approved.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(approved.getBody()).doesNotContain("Kept").doesNotContain("@example.com");
+        JsonNode body = objectMapper.readTree(approved.getBody());
+        assertThat(body.get("status").asText()).isEqualTo("APPROVED");
+        assertThat(body.get("missingCount").asInt()).isEqualTo(2);
+
+        assertThat(status(tenant, "emp-2")).isEqualTo("DEACTIVATED");
+        assertThat(find(tenant, "emp-2").hrVersion()).isEqualTo(1);
+        Stored kept = find(tenant, "emp-3");
+        assertThat(kept.status()).isEqualTo("ACTIVE");
+        assertThat(kept.name()).isEqualTo("Kept");
+        assertThat(kept.hrVersion()).isEqualTo(2);
+
+        ResponseEntity<String> again = restTemplate.withBasicAuth("operator", "test-operator")
+                .postForEntity(url, null, String.class);
+        assertThat(again.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(status(tenant, "emp-3")).isEqualTo("ACTIVE");
+        assertThat(deactivated(tenant)).isEqualTo(1);
+    }
+
     private JsonNode postCsv(byte[] csv) throws Exception {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.parseMediaType("text/csv"));

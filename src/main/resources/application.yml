@@ -49,3 +49,4 @@ hr-sync:
   reconciliation:
     bucket-count: 256
     max-missing-ratio: 0.30
+    operator-password: ${HR_SYNC_OPERATOR_PASSWORD:change-me}
