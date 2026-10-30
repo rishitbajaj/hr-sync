@@ -36,9 +36,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 @Testcontainers
@@ -231,6 +235,39 @@ class OutboxPollerTest {
     }
 
     @Test
+    void crashAfterCommitBeforePublishStillDeliversOnceToADedupingConsumer() {
+        apply(create("emp-crash", 1, "Ada"));
+        assertThat(unpublished("emp-crash")).isEqualTo(1);
+
+        publishGuard.setBeforePublish(notice -> {
+            throw new IllegalStateException("crash before publish");
+        });
+        assertThatThrownBy(() -> poller.poll()).isInstanceOf(IllegalStateException.class);
+        assertThat(publisher.published()).isEmpty();
+        assertThat(unpublished("emp-crash")).isEqualTo(1);
+
+        DedupingConsumer consumer = new DedupingConsumer();
+        AtomicBoolean crashAfterSideEffect = new AtomicBoolean(true);
+        publishGuard.setBeforePublish(null);
+        publisher.setListener(notice -> {
+            consumer.accept(notice);
+            if (crashAfterSideEffect.getAndSet(false)) {
+                throw new IllegalStateException("crash after side effect");
+            }
+        });
+        assertThatThrownBy(() -> newPoller().poll()).isInstanceOf(IllegalStateException.class);
+        assertThat(consumer.effects()).isEqualTo(1);
+        assertThat(unpublished("emp-crash")).isEqualTo(1);
+
+        publisher.setListener(consumer::accept);
+        assertThat(newPoller().poll()).isEqualTo(1);
+        assertThat(consumer.effects()).isEqualTo(1);
+        assertThat(publisher.published()).hasSize(2);
+        assertThat(publisher.published()).extracting(ChangeNotice::eventId).containsOnly(publisher.published().get(0).eventId());
+        assertThat(unpublished("emp-crash")).isZero();
+    }
+
+    @Test
     void outboxPayloadOmitsPersonalValues() {
         apply(new SyncEvent(
                 SampleHrBatch.TENANT,
@@ -307,6 +344,19 @@ class OutboxPollerTest {
         );
     }
 
+    private long unpublished(String employeeId) {
+        Long count = jdbc.queryForObject(
+                """
+                        select count(*) from outbox
+                        where tenant_id = ? and aggregate_id = ? and published_at is null
+                        """,
+                Long.class,
+                SampleHrBatch.TENANT,
+                employeeId
+        );
+        return count == null ? 0 : count;
+    }
+
     private long unpublishedLike(String employeePattern) {
         Long count = jdbc.queryForObject(
                 "select count(*) from outbox where aggregate_id like ? and published_at is null",
@@ -350,6 +400,21 @@ class OutboxPollerTest {
                 EventType.UPDATE,
                 new EmployeeFields(name, null, null, null, null, null, null, null)
         );
+    }
+
+    private static final class DedupingConsumer {
+        private final Set<Long> seen = ConcurrentHashMap.newKeySet();
+        private final AtomicInteger effects = new AtomicInteger();
+
+        void accept(ChangeNotice notice) {
+            if (seen.add(notice.eventId())) {
+                effects.incrementAndGet();
+            }
+        }
+
+        int effects() {
+            return effects.get();
+        }
     }
 
     private static SyncEvent move(String employeeId, long version, String office) {
