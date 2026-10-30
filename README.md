@@ -167,7 +167,7 @@ That runs the tests and then the reconciliation benchmark in a forked JVM with `
 
 Load tests use `load/docker-compose.yml` (ports 5442 and 8092) and are described in `load/README.md`.
 
-`python3 scripts/generate-exports.py` writes a 200,000-row export and a 120,000-row prefix under `scripts/out/`. `scripts/demo.sh` runs the walkthrough above and prints each response. It reads `.env` and talks to `BASE_URL` (default `http://localhost:8080`).
+`python3 scripts/generate-exports.py` writes a 200,000-row export and a 120,000-row prefix under `scripts/out/`. `scripts/demo.sh` runs the walkthrough above and prints each response. It reads `.env` and talks to `BASE_URL` (default `http://localhost:8080`). `docs/DEMO.md` is the timed version of that walkthrough, including the kill and the paused database.
 
 ## Reconciliation benchmark
 
@@ -379,7 +379,7 @@ A rerun of that kill command after the invariant change exited 0. Of 110,600 eve
 
 ## Verification
 
-`mvn -B test` on 2026-10-30: 186 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=3549 peakHeapBytes=86758736 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-30: 186 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=3427 peakHeapBytes=87553160 maxHeapBytes=268435456`.
 
 ## Known limitations
 
