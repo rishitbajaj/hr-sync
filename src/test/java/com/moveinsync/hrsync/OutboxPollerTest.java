@@ -23,13 +23,18 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -236,6 +241,167 @@ class OutboxPollerTest {
         assertThat(employee.get(2).changedFields()).containsExactly("officeCode");
         assertThat(employee.get(0).eventId()).isLessThan(employee.get(1).eventId());
         assertThat(employee.get(1).eventId()).isLessThan(employee.get(2).eventId());
+    }
+
+    @Test
+    void tenEmployeesOfOneThousandDrainInOrder() {
+        int employees = 10;
+        int each = 1_000;
+        Timestamp now = Timestamp.from(clock.instant());
+        jdbc.batchUpdate(
+                """
+                        insert into outbox (
+                            tenant_id, aggregate_id, event_type, payload, created_at, next_attempt_at
+                        )
+                        values (?, ?, 'UPDATE', cast(? as jsonb), ?, ?)
+                        """,
+                new BatchPreparedStatementSetter() {
+                    @Override
+                    public void setValues(PreparedStatement statement, int index) throws SQLException {
+                        statement.setString(1, SampleHrBatch.TENANT);
+                        statement.setString(2, "emp-bulk-" + (index / each));
+                        statement.setString(3, "{\"changedFields\":[\"name\"]}");
+                        statement.setTimestamp(4, now);
+                        statement.setTimestamp(5, now);
+                    }
+
+                    @Override
+                    public int getBatchSize() {
+                        return employees * each;
+                    }
+                }
+        );
+        publisher.clear();
+        long start = System.nanoTime();
+        int delivered = 0;
+        while (delivered < employees * each) {
+            int batch = poller.poll();
+            assertThat(batch).isPositive();
+            delivered += batch;
+            assertThat(System.nanoTime() - start).isLessThan(Duration.ofSeconds(30).toNanos());
+        }
+        assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(30));
+        for (int employee = 0; employee < employees; employee++) {
+            String employeeId = "emp-bulk-" + employee;
+            List<Long> stored = outboxIds(employeeId);
+            assertThat(stored).hasSize(each);
+            List<Long> published = publisher.published().stream()
+                    .filter(notice -> employeeId.equals(notice.aggregateId()))
+                    .map(ChangeNotice::eventId)
+                    .toList();
+            assertThat(published).containsExactlyElementsOf(stored);
+            assertThat(unpublished(employeeId)).isZero();
+        }
+    }
+
+    @Test
+    void aSlowRunDoesNotLetAnotherPollerPublishLaterRows() throws Exception {
+        apply(create("emp-run", 1, "Ada"));
+        apply(rename("emp-run", 2, "Ada 2"));
+        apply(rename("emp-run", 3, "Ada 3"));
+        apply(rename("emp-run", 4, "Ada 4"));
+        apply(create("emp-free", 1, "Bea"));
+        List<Long> runIds = outboxIds("emp-run");
+        long heldId = runIds.get(0);
+        publisher.clear();
+
+        CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        publisher.setListener(notice -> {
+            if (notice.eventId() == heldId) {
+                held.countDown();
+                await(release);
+            }
+        });
+
+        OutboxPoller first = newPoller();
+        OutboxPoller second = newPoller();
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<Integer> running = pool.submit(() -> first.poll(4));
+            assertThat(held.await(20, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(second.poll(4)).isEqualTo(1);
+            assertThat(publisher.published().stream()
+                    .filter(notice -> "emp-run".equals(notice.aggregateId()))
+                    .map(ChangeNotice::eventId)
+                    .toList()).containsExactly(heldId);
+            assertThat(statusOf(runIds.get(1))).isEqualTo("PENDING");
+
+            release.countDown();
+            assertThat(running.get(20, TimeUnit.SECONDS)).isEqualTo(4);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+
+        List<Long> order = publisher.published().stream()
+                .filter(notice -> "emp-run".equals(notice.aggregateId()))
+                .map(ChangeNotice::eventId)
+                .toList();
+        assertThat(order).containsExactlyElementsOf(runIds);
+        assertThat(unpublished("emp-free")).isZero();
+    }
+
+    @Test
+    void aFailureMidRunBlocksOnlyThatEmployeesLaterRows() {
+        apply(create("emp-mid", 1, "Ada"));
+        apply(rename("emp-mid", 2, "Ada 2"));
+        apply(rename("emp-mid", 3, "Ada 3"));
+        apply(create("emp-beside", 1, "Bea"));
+        List<Long> ids = outboxIds("emp-mid");
+        publisher.clear();
+        publisher.setListener(notice -> {
+            if (notice.eventId() == ids.get(1)) {
+                throw new IllegalStateException("middle failed");
+            }
+        });
+
+        assertThat(poller.poll()).isEqualTo(2);
+        assertThat(statuses("emp-mid")).containsExactly("PUBLISHED", "PENDING", "PENDING");
+        assertThat(statuses("emp-beside")).containsExactly("PUBLISHED");
+        assertThat(publisher.published()).extracting(ChangeNotice::eventId).doesNotContain(ids.get(2));
+        assertThat(jdbc.queryForObject("select attempts from outbox where id = ?", Integer.class, ids.get(1))).isEqualTo(1);
+
+        publisher.clear();
+        publisher.setListener(null);
+        assertThat(poller.poll()).isEqualTo(2);
+        assertThat(statuses("emp-mid")).containsExactly("PUBLISHED", "PUBLISHED", "PUBLISHED");
+        assertThat(publisher.published()).extracting(ChangeNotice::eventId)
+                .containsExactly(ids.get(1), ids.get(2));
+    }
+
+    @Test
+    void aCrashMidBatchRedeliversWithoutLosingOrReordering() {
+        apply(create("emp-crash-run", 1, "Ada"));
+        apply(rename("emp-crash-run", 2, "Ada 2"));
+        apply(rename("emp-crash-run", 3, "Ada 3"));
+        List<Long> ids = outboxIds("emp-crash-run");
+        publisher.clear();
+        DedupingConsumer consumer = new DedupingConsumer();
+        publisher.setListener(consumer::accept);
+        AtomicInteger calls = new AtomicInteger();
+        publishGuard.setBeforePublish(notice -> {
+            if (calls.incrementAndGet() == 2) {
+                throw new IllegalStateException("crash mid-batch");
+            }
+        });
+
+        assertThatThrownBy(() -> poller.poll()).isInstanceOf(IllegalStateException.class);
+        assertThat(statuses("emp-crash-run")).containsExactly("PENDING", "PENDING", "PENDING");
+        assertThat(jdbc.queryForObject(
+                "select coalesce(max(attempts), 0) from outbox where aggregate_id = 'emp-crash-run'",
+                Integer.class
+        )).isZero();
+        assertThat(consumer.effects()).isEqualTo(1);
+
+        publishGuard.setBeforePublish(null);
+        publisher.clear();
+        assertThat(poller.poll()).isEqualTo(3);
+        assertThat(statuses("emp-crash-run")).containsExactly("PUBLISHED", "PUBLISHED", "PUBLISHED");
+        assertThat(publisher.published()).extracting(ChangeNotice::eventId).containsExactlyElementsOf(ids);
+        assertThat(consumer.effects()).isEqualTo(3);
+        assertThat(unpublished("emp-crash-run")).isZero();
     }
 
     @Test
