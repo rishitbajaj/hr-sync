@@ -39,6 +39,26 @@ With the `demo` profile, `POST /demo/trips`, `POST /demo/bookings`, and `GET /de
 
 Callers sign in at `POST /auth/token` and send the returned JWT on later requests. Roles are `EMPLOYEE`, `ADMIN`, and `OPERATOR`. An endpoint with no explicit rule is denied. An admin or an employee can act only in the tenant named in the token. An operator is platform staff and must name the tenant when a rule lets them cross tenants. The role table, the token claims, and the trade-offs are in `docs/SECURITY.md`. The signing secret is `HR_SYNC_JWT_SECRET` (at least 32 bytes, no default).
 
+On an empty `users` table, startup creates one operator (tenant `platform`) and one admin from `HR_SYNC_BOOTSTRAP_OPERATOR_USERNAME`, `HR_SYNC_BOOTSTRAP_OPERATOR_PASSWORD`, `HR_SYNC_BOOTSTRAP_ADMIN_USERNAME`, `HR_SYNC_BOOTSTRAP_ADMIN_PASSWORD`, and `HR_SYNC_BOOTSTRAP_ADMIN_TENANT`. Passwords have no default and are stored as BCrypt hashes. A restart does not create them again. `docker compose` reads those variables from `.env`.
+
+The office code in the ingest body must already exist for that tenant. Then:
+
+```bash
+curl -s -X POST http://localhost:8080/auth/token \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"the-admin-password-from-env"}'
+
+curl -s -X POST http://localhost:8080/sync/events \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"events":[{"tenantId":"acme","employeeId":"emp-1","sourceVersion":1,"type":"CREATE","fields":{"name":"Ada","email":"ada@example.com","phone":"+15550000001","manager":"M1","officeCode":"BLR","shift":"DAY"}}]}'
+
+curl -s http://localhost:8080/employees/emp-1 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+`$TOKEN` is the `token` field from the login response. `acme` is `HR_SYNC_BOOTSTRAP_ADMIN_TENANT`, and `admin` is `HR_SYNC_BOOTSTRAP_ADMIN_USERNAME`.
+
 ## Verification
 
 `mvn -B test` on 2026-10-30: 154 tests, 0 failures, plus the separate benchmark. That benchmark printed `reconciliation benchmark rows=200000 elapsedMs=2492 peakHeapBytes=83585064 maxHeapBytes=268435456`.

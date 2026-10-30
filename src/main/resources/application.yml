@@ -51,6 +51,12 @@ hr-sync:
     token-ttl: 15m
     max-login-failures: 5
     login-lockout: 15m
+  bootstrap:
+    operator-username: ${HR_SYNC_BOOTSTRAP_OPERATOR_USERNAME:}
+    operator-password: ${HR_SYNC_BOOTSTRAP_OPERATOR_PASSWORD:}
+    admin-username: ${HR_SYNC_BOOTSTRAP_ADMIN_USERNAME:}
+    admin-password: ${HR_SYNC_BOOTSTRAP_ADMIN_PASSWORD:}
+    admin-tenant: ${HR_SYNC_BOOTSTRAP_ADMIN_TENANT:}
   reconciliation:
     bucket-count: 256
     max-missing-ratio: 0.30

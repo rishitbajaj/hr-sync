@@ -13,6 +13,7 @@ import java.time.Clock;
 @Configuration
 @EnableConfigurationProperties({
         AuthSettings.class,
+        BootstrapSettings.class,
         IngestLimits.class,
         OutboxSettings.class,
         ReconciliationSettings.class,
