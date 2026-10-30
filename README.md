@@ -59,9 +59,47 @@ curl -s http://localhost:8080/employees/emp-1 \
 
 `$TOKEN` is the `token` field from the login response. `acme` is `HR_SYNC_BOOTSTRAP_ADMIN_TENANT`, and `admin` is `HR_SYNC_BOOTSTRAP_ADMIN_USERNAME`.
 
+## Caching
+
+Office existence and `GET /employees/{id}` are cached in memory with Caffeine. Every key includes `tenant_id`. Office entries live at most 60 seconds and employee entries at most 10 seconds (`hr-sync.cache.office-ttl`, `hr-sync.cache.employee-ttl`), with a maximum of 10,000 entries each. An unknown office is not stored. A missing employee and a `PLACEHOLDER` row are not stored. Hit and miss counts are `cache_gets_total`.
+
+Version comparison, ownership, and idempotency always read the database. Those decisions do not use the cache.
+
+What can be stale: on the node that applied a change or a deactivation, that employee's cache entry is removed before the call returns, so the next read on that node sees the write. On any other node, an employee read can be stale for at most 10 seconds. A cached office that still exists can be served for at most 60 seconds after it is removed; a newly added office is looked up on the next check because a miss is not cached.
+
+## Error handling
+
+Every error body is `code`, `message`, and `correlationId`. It does not include a stack trace, SQL, a class name, or personal data. The statuses are validation `400`, malformed JSON `400`, unsupported media type `415`, method not allowed `405`, unknown route `404`, unauthenticated `401`, forbidden `403`, request too large `413`, conflict `409`, database unavailable or pool exhausted `503` with `Retry-After`, and any other failure `500` with the message `An unexpected error occurred`. Connection, statement, and socket timeouts default to about 3 seconds (`hr-sync.database.connection-timeout`, `hr-sync.database.statement-timeout`).
+
+A paused Postgres on a throwaway container (port 5436, app on 8086, so the audit stack on 5432 and 8080 was left alone) returned `503` in 3.094 seconds. After a warm `CREATE` of `emp-probe` at version 1 had already returned `200` (`time_total=0.381972`, outcome `APPLIED`), the same body was sent again:
+
+```bash
+docker pause hrsync-error-probe-pg
+curl -sS -D /tmp/paused-headers.txt -o /tmp/paused-body.txt \
+  -w 'http_code=%{http_code} time_total=%{time_total}\n' --max-time 20 \
+  -X POST http://localhost:8086/sync/events \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'X-Correlation-Id: probe-paused' \
+  -d '{"events":[{"tenantId":"acme","employeeId":"emp-probe","sourceVersion":1,"type":"CREATE","fields":{"name":"Probe","email":"probe@example.com","phone":"+15550000001","manager":"M1","officeCode":"BLR","shift":"DAY"}}]}'
+docker unpause hrsync-error-probe-pg
+```
+
+While paused:
+
+```text
+HTTP/1.1 503
+Retry-After: 3
+X-Correlation-Id: probe-paused
+
+{"code":"UNAVAILABLE","message":"Database is unavailable","correlationId":"probe-paused"}
+http_code=503 time_total=3.094185
+```
+
+After `docker unpause`, the same ingest with `X-Correlation-Id: probe-recovered` returned `200` (`time_total=0.011950`) and `{"results":[{"tenantId":"acme","employeeId":"emp-probe","sourceVersion":1,"outcome":"IGNORED","reasonCode":"DUPLICATE"}]}`.
+
 ## Verification
 
-`mvn -B test` on 2026-10-30: 154 tests, 0 failures, plus the separate benchmark. That benchmark printed `reconciliation benchmark rows=200000 elapsedMs=2492 peakHeapBytes=83585064 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-30: 181 tests, 0 failures, plus the separate benchmark. That benchmark printed `reconciliation benchmark rows=200000 elapsedMs=2571 peakHeapBytes=86820712 maxHeapBytes=268435456`.
 
 ## Known limitations
 
