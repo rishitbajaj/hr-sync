@@ -5,6 +5,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moveinsync.hrsync.booking.Cancellation;
 import com.moveinsync.hrsync.booking.MockBookingService;
 import com.moveinsync.hrsync.domain.EmployeeFields;
 import com.moveinsync.hrsync.domain.EventType;
@@ -305,6 +306,48 @@ class DeactivationSideEffectTest {
         assertThat(effectRows(tenant, "emp-1")).isEqualTo(1);
         assertThat(seatsFreed(tenant, "emp-1")).isEqualTo(1);
         assertThat(publishedDeactivations(tenant, "emp-1")).isEqualTo(1);
+    }
+
+    @Test
+    void cancelDoesNotTouchAnotherTenantsBooking() {
+        String tenant = "cab-tenant-a";
+        String other = "cab-tenant-b";
+        hire(tenant, "emp-1", "Ada");
+        hire(other, "emp-1", "Bea");
+        Instant start = clock.instant().plus(Duration.ofDays(1));
+        bookings.seedTrip(tenant, "trip-a", 1);
+        bookings.seedTrip(other, "trip-b", 1);
+        bookings.seedBooking("own", tenant, "emp-1", "trip-a", start);
+        bookings.seedBooking("theirs", other, "emp-1", "trip-b", start);
+
+        deactivate(tenant, "emp-1", 2);
+        assertThat(poller.poll()).isEqualTo(1);
+
+        assertThat(bookings.isCancelled("own")).isTrue();
+        assertThat(bookings.isCancelled("theirs")).isFalse();
+        assertThat(bookings.occupied("trip-a")).isZero();
+        assertThat(bookings.occupied("trip-b")).isEqualTo(1);
+    }
+
+    @Test
+    void aRepeatedCancelDoesNotFreeAnotherSeat() {
+        String tenant = "cab-repeat";
+        Instant cutoff = clock.instant();
+        bookings.seedTrip(tenant, "trip-1", 2);
+        bookings.seedBooking("later", tenant, "emp-1", "trip-1", cutoff.plus(Duration.ofDays(1)));
+        bookings.seedBooking("past", tenant, "emp-1", "trip-1", cutoff.minus(Duration.ofDays(1)));
+
+        Cancellation first = bookings.cancelFutureBookings(tenant, "emp-1", cutoff, 4242L);
+        int occupiedAfterFirst = bookings.occupied("trip-1");
+        Cancellation second = bookings.cancelFutureBookings(tenant, "emp-1", cutoff, 4242L);
+
+        assertThat(first.seatsFreed()).isEqualTo(1);
+        assertThat(first.bookingIds()).containsExactly("later");
+        assertThat(second.seatsFreed()).isEqualTo(first.seatsFreed());
+        assertThat(second.bookingIds()).containsExactlyElementsOf(first.bookingIds());
+        assertThat(occupiedAfterFirst).isEqualTo(1);
+        assertThat(bookings.occupied("trip-1")).isEqualTo(occupiedAfterFirst);
+        assertThat(bookings.isCancelled("past")).isFalse();
     }
 
     @Test
