@@ -34,4 +34,4 @@ for _ in $(seq 1 60); do
 done
 curl -sf -o /dev/null http://127.0.0.1:8092/health
 
-python3 load/invariants.py check failure --allow-unacked
+python3 load/invariants.py check failure --allow-unacked --drain-timeout "${DRAIN_TIMEOUT:-120}"

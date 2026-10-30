@@ -132,20 +132,30 @@ def cross_tenant():
 def drain(timeout):
     started = time.time()
     last = None
+    last_pending = None
+    pending_changed = time.time()
     while True:
         current = counts()
         age = oldest_pending()
         if current["pending"] == 0 and current["failed"] == 0:
             return round(time.time() - started, 3), age, current
+        if current["pending"] != last_pending:
+            last_pending = current["pending"]
+            pending_changed = time.time()
+        elif current["pending"] > 0 and time.time() - pending_changed > 20:
+            print("drain stalled pending=" + str(current["pending"]), flush=True)
+            return round(time.time() - started, 3), age, current
         if time.time() - started > timeout:
-            sys.exit(
+            print(
                 "drain timed out pending="
                 + str(current["pending"])
                 + " failed="
                 + str(current["failed"])
                 + " oldest="
-                + str(age)
+                + str(age),
+                flush=True,
             )
+            return round(time.time() - started, 3), age, current
         if current != last:
             print(
                 "draining pending="
@@ -168,12 +178,12 @@ def baseline():
     print(json.dumps(payload))
 
 
-def check(scenario, allow_unacked):
+def check(scenario, allow_unacked, drain_timeout):
     summary_path = DATA / (scenario + "-summary.json")
     baseline_path = DATA / "baseline.json"
     summary = json.loads(summary_path.read_text())
     before = json.loads(baseline_path.read_text())
-    drain_seconds, oldest_after, after = drain(timeout=1800)
+    drain_seconds, oldest_after, after = drain(timeout=drain_timeout)
     applied = summary["events_applied"]
     stale = summary["events_stale"]
     duplicate = summary["events_duplicate"]
@@ -239,7 +249,7 @@ def check(scenario, allow_unacked):
         failures.append("cross-tenant row")
     if after["pending"] != 0 or after["failed"] != 0 or after["notPublished"] != 0:
         failures.append("outbox did not end PUBLISHED")
-    if oldest_after != 0:
+    if oldest_after != 0 and after["pending"] == 0:
         failures.append("oldest pending age is not zero")
     report["ok"] = not failures
     report["failures"] = failures
@@ -257,7 +267,10 @@ def main():
         return
     if sys.argv[1] == "check":
         scenario = sys.argv[2]
-        check(scenario, "--allow-unacked" in sys.argv)
+        timeout = 1800
+        if "--drain-timeout" in sys.argv:
+            timeout = int(sys.argv[sys.argv.index("--drain-timeout") + 1])
+        check(scenario, "--allow-unacked" in sys.argv, timeout)
         return
     sys.exit("unknown command")
 

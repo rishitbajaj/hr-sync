@@ -51,7 +51,7 @@ def wait_health():
                     print("health ok")
                     return
                 last = str(response.status)
-        except (urllib.error.URLError, TimeoutError) as error:
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
             last = str(error)
         time.sleep(2)
     sys.exit("health did not return 200: " + last)

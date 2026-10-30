@@ -35,8 +35,12 @@ sample() {
     docker exec hrsync-load-pg psql -U hrsync -d hrsync -c \
       "select now(), state, wait_event_type, wait_event, count(*) from pg_stat_activity where datname = 'hrsync' group by 1, 2, 3, 4 order by 5 desc;" \
       >"$OUT/activity-$ts.txt" || true
-    curl -sS -H "Authorization: Bearer $TOKEN" -H 'Accept: text/plain' \
+    curl -sS -m 8 -H "Authorization: Bearer $TOKEN" -H 'Accept: application/openmetrics-text;version=1.0.0;charset=utf-8' \
       http://127.0.0.1:8092/actuator/prometheus -o "$OUT/prom-$ts.txt" || true
+    for metric in jvm.memory.used process.cpu.usage system.cpu.usage hikaricp.connections.active hikaricp.connections.pending hikaricp.connections.max outbox.pending outbox.oldest.pending.seconds outbox.failed outbox.published; do
+      curl -sS -m 8 -H "Authorization: Bearer $TOKEN" \
+        "http://127.0.0.1:8092/actuator/metrics/${metric}" -o "$OUT/metric-${metric}-$ts.json" || true
+    done
     sleep 5
   done
 }
@@ -63,5 +67,5 @@ docker exec hrsync-load-pg psql -U hrsync -d hrsync -c \
   "explain select id from employee where tenant_id = 'load-a' and employee_id = 'a-1-0' for update;" \
   >"$OUT/explain-employee.txt" || true
 
-python3 load/invariants.py check "$SCENARIO"
+python3 load/invariants.py check "$SCENARIO" --drain-timeout "${DRAIN_TIMEOUT:-90}"
 exit "$K6_STATUS"

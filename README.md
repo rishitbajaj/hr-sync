@@ -97,6 +97,49 @@ http_code=503 time_total=3.094185
 
 After `docker unpause`, the same ingest with `X-Correlation-Id: probe-recovered` returned `200` (`time_total=0.011950`) and `{"results":[{"tenantId":"acme","employeeId":"emp-probe","sourceVersion":1,"outcome":"IGNORED","reasonCode":"DUPLICATE"}]}`.
 
+## Load
+
+k6 runs in the `grafana/k6` image (`k6 v2.3.0`). The stack is `load/docker-compose.yml` (project `hrsync-load`, host ports 5442 and 8092). One line, from the repo root, after the compose file is up and `python3 load/generate.py` has seeded:
+
+```bash
+docker run --rm --network hrsync-load --env-file load/.env -e SCENARIO=ingest -e BASE_URL=http://app:8080 -v "$PWD:/work" -w /work grafana/k6 run load/k6.js
+```
+
+`./load/run.sh ingest` is that command plus CPU, `pg_stat_activity`, and actuator samples, then `load/invariants.py`. The ramp was `./load/run.sh ramp -e STAGE=15s -e RAMP_EXEC=ingest`. The four fixed runs were `./load/run.sh <scenario>` with `VUS=8`, `WARMUP=10s`, `DURATION=60s`, in the order reads, contention, mixed, ingest, on one database.
+
+Machine: WSL2 (`Linux 6.6.87.2-microsoft-standard-WSL2`), AMD Ryzen 7 7840HS (8 cores, 16 threads), 7,760,064 kB RAM, Docker 29.4.2, Compose v5.1.3, Temurin 21.0.13, PostgreSQL 16.15 (`postgres:16-alpine` in `hrsync-load-pg`). Measured on 2026-10-30. No code was changed to improve these numbers.
+
+Hikari is left at its default. `hikaricp.connections.max` was 10 on every sample. Each event is its own transaction: `pg_stat_statements` for the 60s ingest counted 127,320 `BEGIN`s, 100,740 employee updates (mean 0.06 ms), 100,740 outbox inserts, and 100,740 `processed_event` inserts. A batch of 100 therefore holds one pool connection for the whole request.
+
+The ramp is 15s at each virtual-user count, ingest only. HTTP error rate was 0. Throughput is requests in that 15s divided by 15. Events/s is that times 100. Latency is the stage trend.
+
+| VUs | req/s | events/s | p50 | p95 | p99 |
+| --- | --- | --- | --- | --- | --- |
+| 2 | 4.93 | 493 | 414.1 ms | 450.9 ms | 585.5 ms |
+| 4 | 9.60 | 960 | 415.6 ms | 437.4 ms | 448.0 ms |
+| 8 | 18.2 | 1,820 | 440.8 ms | 467.5 ms | 511.4 ms |
+| 16 | 21.4 | 2,140 | 760.5 ms | 1,021.2 ms | 1,171.0 ms |
+| 32 | 22.8 | 2,280 | 1,440.8 ms | 2,134.4 ms | 2,452.3 ms |
+| 48 | 23.27 | 2,327 | 2,098.4 ms | 3,469.6 ms | 4,046.1 ms |
+
+It stops scaling after 8 virtual users. From 8 to 16, throughput rose by 3.2 req/s while p50 rose from 441 ms to 761 ms. From 32 to 48 it rose from 22.8 to 23.3 req/s while p50 rose from 1,441 ms to 2,098 ms. The ceiling is about 23 requests/s (about 2,300 events/s). Ten connections each busy for ~420 ms can finish about 24 batches/s, which is the same ceiling. During the ramp, Docker's CPU sample peaked at 125.6% for the app and 312.8% for Postgres. Peak container RSS was 541.2 MiB (app) and 252.3 MiB (Postgres). The ramp did not record a JVM heap gauge.
+
+The 60s runs, steady window only for latency and for the request rate. Error rate was 0 on every run. CPU and RSS are the max Docker sample. Heap is the max untagged `jvm.memory.used` sample (heap and non-heap together). The actuator `process.cpu.usage` samples in the same windows stayed under 0.33, so the table uses the Docker reading.
+
+| Scenario | req/s | events/s | p50 | p95 | p99 | app CPU | Postgres CPU | app RSS | heap |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Ingest, 8 VUs | 19.07 | 1,907 | 418.7 ms | 454.5 ms | 604.4 ms | 102.2% | 254.4% | 632.6 MiB | 345,372,256 |
+| Contention, 8 VUs | 14.27 | 1,427 | 500.3 ms | 924.3 ms | 1,653.8 ms | 75.3% | 246.5% | 611.2 MiB | 331,682,728 |
+| Reads, warm | 8,893 | — | 0.321 ms | 0.492 ms | 0.737 ms | 514.1% | 82.6% | 601.6 MiB | 305,513,848 |
+| Reads, cold | — | — | 0.695 ms | 1.318 ms | 2.189 ms | (same run) | (same run) | (same run) | (same run) |
+| Mixed reads | 8,124 | — | 0.357 ms | 0.522 ms | 0.759 ms | 354.7% | 188.8% | 630.0 MiB | 336,181,984 |
+
+Cold reads completed 49,996 requests and then ran out of ids (`cold_exhausted` 196), so there is no 60s cold rate. `pg_stat_statements` recorded 50,442 employee selects in that run against 533,600 warm reads, so the warm path was the cache. Locking one employee row is an index scan on `uq_employee_tenant_employee` (cost 0.42..8.45). During contention, `pg_stat_activity` showed sessions waiting on `Lock` / `tuple` and `Lock` / `transactionid`, and on `WALWrite`.
+
+Mixed ingest was 636 batches (63,600 events) across the 10s warmup and the 60s hold, about 9 batches/s from 4 writer virtual users. 487,430 of the 487,974 steady requests were reads, so the mixed latency above is the read latency. Hikari active connections peaked at 9 (pending 0) on ingest and contention, and at 2 on reads.
+
+The outbox poller is the limit that falls over. It claims 100 rows and then waits 1s. The 60s ingest applied 100,740 changes in the whole run, about 1,400 applied events/s, against a poller that later published a 34k queue at about 60 rows/s. After contention the queue was 85,672 pending and a further 120s published almost none of them. Mixed and ingest then sat at 133,516 and 234,256 pending with the count unchanged for 20s. The pending-count plan on that table was a parallel index-only scan (cost about 5,937). The claim itself turns hash and merge joins off. Saved Prometheus scrapes were `# EOF` (6 bytes) or empty; the JSON gauges above came from `/actuator/metrics`.
+
 ## Verification
 
 `mvn -B test` on 2026-10-30: 181 tests, 0 failures, plus the separate benchmark. That benchmark printed `reconciliation benchmark rows=200000 elapsedMs=2571 peakHeapBytes=86820712 maxHeapBytes=268435456`.
