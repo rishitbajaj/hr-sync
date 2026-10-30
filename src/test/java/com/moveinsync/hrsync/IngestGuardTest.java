@@ -12,6 +12,7 @@ import com.moveinsync.hrsync.config.IngestLimits;
 import com.moveinsync.hrsync.domain.BatchIngestor;
 import com.moveinsync.hrsync.domain.EventValidator;
 import com.moveinsync.hrsync.domain.OfficeDirectory;
+import com.moveinsync.hrsync.service.InfrastructureErrors;
 import com.moveinsync.hrsync.service.SyncEventService;
 import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.Test;
@@ -113,7 +114,7 @@ class IngestGuardTest {
     private static MockMvc mvc(InMemoryChangeStore store, IngestLimits limits) {
         OfficeDirectory offices = (tenantId, officeCode) -> SampleHrBatch.OFFICE.equals(officeCode);
         SyncEventService service = new SyncEventService(
-                new BatchIngestor(new EventValidator(), offices, store),
+                new BatchIngestor(new EventValidator(), offices, store, InfrastructureErrors::isInfrastructure),
                 new com.moveinsync.hrsync.metrics.SyncMeters(new io.micrometer.core.instrument.simple.SimpleMeterRegistry())
         );
         return MockMvcBuilders.standaloneSetup(new SyncEventController(service, limits))

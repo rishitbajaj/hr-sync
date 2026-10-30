@@ -4,6 +4,7 @@ import com.moveinsync.hrsync.domain.BatchIngestor;
 import com.moveinsync.hrsync.domain.ChangeStore;
 import com.moveinsync.hrsync.domain.EventValidator;
 import com.moveinsync.hrsync.domain.OfficeDirectory;
+import com.moveinsync.hrsync.service.InfrastructureErrors;
 import com.github.benmanes.caffeine.cache.Ticker;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -39,6 +40,6 @@ public class SyncConfig {
 
     @Bean
     public BatchIngestor batchIngestor(OfficeDirectory offices, ChangeStore changes) {
-        return new BatchIngestor(new EventValidator(), offices, changes);
+        return new BatchIngestor(new EventValidator(), offices, changes, InfrastructureErrors::isInfrastructure);
     }
 }

@@ -3,5 +3,6 @@ package com.moveinsync.hrsync.domain;
 public enum Outcome {
     APPLIED,
     REJECTED,
-    IGNORED
+    IGNORED,
+    RETRYABLE_ERROR
 }

@@ -126,6 +126,9 @@ public class SyncMeters {
         if (result.outcome() == Outcome.IGNORED && result.reasonCode() == ReasonCode.DUPLICATE) {
             return "ingest.duplicate";
         }
+        if (result.outcome() == Outcome.RETRYABLE_ERROR) {
+            return "ingest.retryable";
+        }
         return "ingest.rejected";
     }
 }

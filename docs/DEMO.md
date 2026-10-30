@@ -245,4 +245,26 @@ After unpause, the same read took 0.022 seconds and returned 404:
 {"code":"NOT_FOUND","message":"Employee not found","correlationId":"6063db60-a478-4b90-90eb-7bf10e6fbe21"}
 ```
 
-A `POST /sync/events` during the same pause returned HTTP 200 in 3.139 seconds, `REJECTED` / `APPLY_FAILED`, and left no row. The same create after unpause was `APPLIED` in 0.033 seconds.
+A batch sent while Postgres is paused is 503, not a rejected record. Pause the database, post three creates, then unpause and send the same body:
+
+```bash
+docker compose pause postgres
+curl -sS -D - -o /tmp/hr-retry-body.txt -w 'time:%{time_total} code:%{http_code}\n' \
+  -X POST http://localhost:8080/sync/events \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'X-Correlation-Id: probe-retry' \
+  -d "{\"events\":[
+    {\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-retry-1\",\"sourceVersion\":1,\"type\":\"CREATE\",\"fields\":{\"name\":\"One\",\"email\":\"one@example.com\",\"phone\":\"+15550000011\",\"officeCode\":\"BLR\",\"shift\":\"DAY\"}},
+    {\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-retry-2\",\"sourceVersion\":1,\"type\":\"CREATE\",\"fields\":{\"name\":\"Two\",\"email\":\"two@example.com\",\"phone\":\"+15550000012\",\"officeCode\":\"BLR\",\"shift\":\"DAY\"}},
+    {\"tenantId\":\"$TENANT\",\"employeeId\":\"walk-retry-3\",\"sourceVersion\":1,\"type\":\"CREATE\",\"fields\":{\"name\":\"Three\",\"email\":\"three@example.com\",\"phone\":\"+15550000013\",\"officeCode\":\"BLR\",\"shift\":\"DAY\"}}
+  ]}"
+docker compose unpause postgres
+```
+
+On this run the paused post took 3.247 seconds. The status line was `HTTP/1.1 503`, `Retry-After: 3`, `X-Correlation-Id: probe-retry`, and the body was:
+
+```text
+{"results":[{"tenantId":"demo-co","employeeId":"walk-retry-1","sourceVersion":1,"outcome":"RETRYABLE_ERROR","reasonCode":"DATABASE_UNAVAILABLE"},{"tenantId":"demo-co","employeeId":"walk-retry-2","sourceVersion":1,"outcome":"RETRYABLE_ERROR","reasonCode":"NOT_PROCESSED"},{"tenantId":"demo-co","employeeId":"walk-retry-3","sourceVersion":1,"outcome":"RETRYABLE_ERROR","reasonCode":"NOT_PROCESSED"}],"correlationId":"probe-retry"}
+```
+
+No `walk-retry-*` row was stored. After unpause, the same body returned HTTP 200 in 0.055 seconds, every result `APPLIED`. Each employee then had `hr_version` 1, one `processed_event` row, and one outbox row.

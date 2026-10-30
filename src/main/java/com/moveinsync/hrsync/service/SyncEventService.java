@@ -39,6 +39,9 @@ public class SyncEventService {
             meters.recordIngest(result, channel);
             logResult(result);
         });
+        if (results.stream().anyMatch(result -> result.outcome() == Outcome.RETRYABLE_ERROR)) {
+            throw new IngestUnavailableException(results);
+        }
         return results;
     }
 
@@ -61,6 +64,16 @@ public class SyncEventService {
         if (result.outcome() == Outcome.IGNORED) {
             log.info(
                     "ignored tenantId={} employeeId={} sourceVersion={} reason={}",
+                    result.tenantId(),
+                    result.employeeId(),
+                    result.sourceVersion(),
+                    result.reasonCode()
+            );
+            return;
+        }
+        if (result.outcome() == Outcome.RETRYABLE_ERROR) {
+            log.warn(
+                    "retryable tenantId={} employeeId={} sourceVersion={} reason={}",
                     result.tenantId(),
                     result.employeeId(),
                     result.sourceVersion(),

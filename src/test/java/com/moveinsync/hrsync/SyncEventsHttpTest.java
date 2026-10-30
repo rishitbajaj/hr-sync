@@ -20,11 +20,15 @@ import com.moveinsync.hrsync.repo.EmployeeEntity;
 import com.moveinsync.hrsync.repo.EmployeeRepository;
 import com.moveinsync.hrsync.repo.OfficeEntity;
 import com.moveinsync.hrsync.repo.OfficeRepository;
+import com.moveinsync.hrsync.observability.CorrelationIds;
+import com.moveinsync.hrsync.service.PersistGate;
 import com.moveinsync.hrsync.service.SyncEventService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.QueryTimeoutException;
+import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
@@ -78,6 +82,9 @@ class SyncEventsHttpTest {
 
     @Autowired
     private PlatformTransactionManager transactionManager;
+
+    @Autowired
+    private PersistGate persistGate;
 
     @BeforeEach
     void seedOffice() {
@@ -235,6 +242,137 @@ class SyncEventsHttpTest {
             }
             assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "outer-" + index)).isPresent();
         }
+    }
+
+    @Test
+    void databaseUnavailableForTheWholeBatchReturns503AndAppliesNothing() throws Exception {
+        persistGate.failNext(new QueryTimeoutException("canceling statement due to statement timeout"));
+        try {
+            HttpHeaders headers = jsonHeaders();
+            headers.set(CorrelationIds.HEADER, "trace-transport-down");
+            ResponseEntity<String> response = restTemplate.postForEntity(
+                    "/sync/transport-events",
+                    new HttpEntity<>(new SyncBatchRequest(List.of(
+                            transport("tr-1"),
+                            transport("tr-2")
+                    )), headers),
+                    String.class
+            );
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("3");
+            assertThat(response.getHeaders().getFirst(CorrelationIds.HEADER)).isEqualTo("trace-transport-down");
+            JsonNode body = objectMapper.readTree(response.getBody());
+            assertThat(body.get("correlationId").asText()).isEqualTo("trace-transport-down");
+            JsonNode results = body.get("results");
+            assertThat(results).hasSize(2);
+            assertThat(results.get(0).get("outcome").asText()).isEqualTo("RETRYABLE_ERROR");
+            assertThat(results.get(0).get("reasonCode").asText()).isEqualTo("DATABASE_UNAVAILABLE");
+            assertThat(results.get(1).get("outcome").asText()).isEqualTo("RETRYABLE_ERROR");
+            assertThat(results.get(1).get("reasonCode").asText()).isEqualTo("NOT_PROCESSED");
+            assertThat(response.getBody()).doesNotContain("REJECTED");
+            assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "tr-1")).isEmpty();
+            assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "tr-2")).isEmpty();
+        } finally {
+            persistGate.failNext(null);
+        }
+    }
+
+    @Test
+    void aConnectionFailureInTheMiddleKeepsEarlierAppliesAndAResendWritesEachOnce() throws Exception {
+        persistGate.failAfter(1, new CannotGetJdbcConnectionException("connection refused"));
+        HttpHeaders headers = jsonHeaders();
+        headers.set(CorrelationIds.HEADER, "trace-hr-middle");
+        SyncBatchRequest batch = new SyncBatchRequest(List.of(
+                create("infra-1"),
+                create("infra-2"),
+                create("infra-3")
+        ));
+        try {
+            ResponseEntity<String> response = restTemplate.postForEntity(
+                    "/sync/events",
+                    new HttpEntity<>(batch, headers),
+                    String.class
+            );
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("3");
+            JsonNode body = objectMapper.readTree(response.getBody());
+            assertThat(body.get("correlationId").asText()).isEqualTo("trace-hr-middle");
+            JsonNode results = body.get("results");
+            assertThat(results.get(0).get("outcome").asText()).isEqualTo("APPLIED");
+            assertThat(results.get(1).get("outcome").asText()).isEqualTo("RETRYABLE_ERROR");
+            assertThat(results.get(1).get("reasonCode").asText()).isEqualTo("DATABASE_UNAVAILABLE");
+            assertThat(results.get(2).get("outcome").asText()).isEqualTo("RETRYABLE_ERROR");
+            assertThat(results.get(2).get("reasonCode").asText()).isEqualTo("NOT_PROCESSED");
+            assertThat(response.getBody()).doesNotContain("REJECTED");
+            assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "infra-1")).isPresent();
+            assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "infra-2")).isEmpty();
+            assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "infra-3")).isEmpty();
+            assertThat(countRows("processed_event", "infra-1")).isEqualTo(1);
+            assertThat(countRows("outbox", "infra-1")).isEqualTo(1);
+            assertThat(countRows("processed_event", "infra-2")).isZero();
+            assertThat(countRows("outbox", "infra-3")).isZero();
+        } finally {
+            persistGate.failNext(null);
+        }
+
+        ResponseEntity<String> replay = restTemplate.postForEntity(
+                "/sync/events",
+                new HttpEntity<>(batch, jsonHeaders()),
+                String.class
+        );
+        assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode replayed = objectMapper.readTree(replay.getBody()).get("results");
+        assertThat(replayed.get(0).get("outcome").asText()).isEqualTo("IGNORED");
+        assertThat(replayed.get(0).get("reasonCode").asText()).isEqualTo("DUPLICATE");
+        assertThat(replayed.get(1).get("outcome").asText()).isEqualTo("APPLIED");
+        assertThat(replayed.get(2).get("outcome").asText()).isEqualTo("APPLIED");
+        for (String employeeId : List.of("infra-1", "infra-2", "infra-3")) {
+            assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, employeeId)).isPresent();
+            assertThat(countRows("processed_event", employeeId)).isEqualTo(1);
+            assertThat(countRows("outbox", employeeId)).isEqualTo(1);
+        }
+    }
+
+    private SyncEventRequest create(String employeeId) {
+        return new SyncEventRequest(
+                SampleHrBatch.TENANT,
+                employeeId,
+                1L,
+                "CREATE",
+                new SyncFieldsRequest(
+                        "Ada",
+                        employeeId + "@leak.example",
+                        "+15550000071",
+                        "M1",
+                        SampleHrBatch.OFFICE,
+                        null,
+                        null,
+                        "DAY"
+                )
+        );
+    }
+
+    private static SyncEventRequest transport(String employeeId) {
+        return new SyncEventRequest(
+                SampleHrBatch.TENANT,
+                employeeId,
+                1L,
+                "UPDATE",
+                new SyncFieldsRequest(null, null, null, null, null, "Gate 4", null, null)
+        );
+    }
+
+    private int countRows(String table, String employeeId) {
+        String column = "outbox".equals(table) ? "aggregate_id" : "employee_id";
+        Integer count = jdbc.queryForObject(
+                "select count(*) from " + table + " where tenant_id = ? and " + column + " = ?",
+                Integer.class,
+                SampleHrBatch.TENANT,
+                employeeId
+        );
+        return count == null ? 0 : count;
     }
 
     private HttpHeaders jsonHeaders() {

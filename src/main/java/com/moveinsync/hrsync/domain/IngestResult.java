@@ -18,4 +18,8 @@ public record IngestResult(
     public static IngestResult ignored(String tenantId, String employeeId, Long sourceVersion, ReasonCode reasonCode) {
         return new IngestResult(tenantId, employeeId, sourceVersion, Outcome.IGNORED, reasonCode);
     }
+
+    public static IngestResult retryable(String tenantId, String employeeId, Long sourceVersion, ReasonCode reasonCode) {
+        return new IngestResult(tenantId, employeeId, sourceVersion, Outcome.RETRYABLE_ERROR, reasonCode);
+    }
 }

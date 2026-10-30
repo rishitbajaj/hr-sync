@@ -4,6 +4,9 @@ import com.moveinsync.hrsync.auth.AuthenticationRejectedException;
 import com.moveinsync.hrsync.auth.TenantMismatchException;
 import com.moveinsync.hrsync.auth.TenantRequiredException;
 import com.moveinsync.hrsync.config.DatabaseSettings;
+import com.moveinsync.hrsync.observability.CorrelationIds;
+import com.moveinsync.hrsync.service.InfrastructureErrors;
+import com.moveinsync.hrsync.service.IngestUnavailableException;
 import com.moveinsync.hrsync.service.OutboxConflictException;
 import com.moveinsync.hrsync.service.OutboxNotFoundException;
 import com.moveinsync.hrsync.service.OutboxRejectedException;
@@ -13,13 +16,10 @@ import com.moveinsync.hrsync.service.ReconciliationNotFoundException;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.dao.QueryTimeoutException;
-import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
-import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -29,11 +29,6 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
-
-import java.net.ConnectException;
-import java.net.SocketException;
-import java.net.SocketTimeoutException;
-import java.sql.SQLException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -129,9 +124,17 @@ public class ApiExceptionHandler {
         return badRequest("RECONCILIATION_REJECTED", exception.getMessage());
     }
 
+    @ExceptionHandler(IngestUnavailableException.class)
+    public ResponseEntity<SyncBatchResponse> ingestUnavailable(IngestUnavailableException exception) {
+        log.error("database unavailable during ingest");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, retryAfterSeconds)
+                .body(SyncBatchResponse.from(exception.results(), CorrelationIds.current()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> unexpected(Exception exception) {
-        if (unavailable(exception)) {
+        if (InfrastructureErrors.isInfrastructure(exception)) {
             log.error("database unavailable");
             return ResponseEntity.status(503)
                     .header(HttpHeaders.RETRY_AFTER, retryAfterSeconds)
@@ -145,27 +148,4 @@ public class ApiExceptionHandler {
         return ResponseEntity.badRequest().body(new ApiError(code, message));
     }
 
-    static boolean unavailable(Throwable throwable) {
-        Throwable current = throwable;
-        while (current != null) {
-            if (current instanceof CannotGetJdbcConnectionException
-                    || current instanceof DataAccessResourceFailureException
-                    || current instanceof QueryTimeoutException
-                    || current instanceof TransientDataAccessResourceException
-                    || current instanceof SocketTimeoutException
-                    || current instanceof ConnectException
-                    || current instanceof SocketException) {
-                return true;
-            }
-            if (current instanceof SQLException sql && connectionFailure(sql.getSQLState())) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
-    }
-
-    private static boolean connectionFailure(String state) {
-        return state != null && (state.startsWith("08") || state.equals("57014") || state.equals("57P01") || state.equals("53300"));
-    }
 }
