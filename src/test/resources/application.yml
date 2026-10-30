@@ -7,3 +7,6 @@ hr-sync:
   outbox:
     poll-interval: 1h
     batch-size: 20
+    max-attempts: 3
+    retry-base: 0ms
+    retry-max-delay: 0ms

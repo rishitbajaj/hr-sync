@@ -309,6 +309,54 @@ class OutboxPollerTest {
     }
 
     @Test
+    void publishFailsTwiceThenSucceeds() {
+        apply(create("emp-retry", 1, "Ada"));
+        AtomicInteger failures = new AtomicInteger();
+        publisher.setListener(notice -> {
+            if (failures.getAndIncrement() < 2) {
+                throw new IllegalStateException("publish down");
+            }
+        });
+
+        assertThat(poller.poll()).isZero();
+        assertThat(attempts("emp-retry")).isEqualTo(1);
+        assertThat(outboxStatus("emp-retry")).isEqualTo("PENDING");
+        assertThat(poller.poll()).isZero();
+        assertThat(attempts("emp-retry")).isEqualTo(2);
+        assertThat(outboxStatus("emp-retry")).isEqualTo("PENDING");
+
+        assertThat(poller.poll()).isEqualTo(1);
+        assertThat(outboxStatus("emp-retry")).isEqualTo("PUBLISHED");
+        assertThat(attempts("emp-retry")).isEqualTo(2);
+        assertThat(unpublished("emp-retry")).isZero();
+    }
+
+    @Test
+    void exhaustedPublishEndsFailedWithoutBlockingOtherEmployees() {
+        apply(create("emp-stuck", 1, "Ada"));
+        publisher.setListener(notice -> {
+            throw new IllegalStateException("publish down");
+        });
+        for (int attempt = 0; attempt < settings.getMaxAttempts(); attempt++) {
+            assertThat(poller.poll()).isZero();
+        }
+
+        assertThat(outboxStatus("emp-stuck")).isEqualTo("FAILED");
+        assertThat(attempts("emp-stuck")).isEqualTo(settings.getMaxAttempts());
+        assertThat(poller.poll()).isZero();
+        assertThat(outboxStatus("emp-stuck")).isEqualTo("FAILED");
+
+        publisher.setListener(null);
+        apply(create("emp-ok", 1, "Bea"));
+        apply(rename("emp-stuck", 2, "Ada Two"));
+        assertThat(poller.poll()).isEqualTo(2);
+
+        assertThat(statuses("emp-stuck")).containsExactly("FAILED", "PUBLISHED");
+        assertThat(statuses("emp-ok")).containsExactly("PUBLISHED");
+        assertThat(unpublished("emp-ok")).isZero();
+    }
+
+    @Test
     void crashAfterCommitBeforePublishStillDeliversOnceToADedupingConsumer() {
         apply(create("emp-crash", 1, "Ada"));
         assertThat(unpublished("emp-crash")).isEqualTo(1);
@@ -319,6 +367,7 @@ class OutboxPollerTest {
         assertThatThrownBy(() -> poller.poll()).isInstanceOf(IllegalStateException.class);
         assertThat(publisher.published()).isEmpty();
         assertThat(unpublished("emp-crash")).isEqualTo(1);
+        assertThat(attempts("emp-crash")).isZero();
 
         DedupingConsumer consumer = new DedupingConsumer();
         AtomicBoolean crashAfterSideEffect = new AtomicBoolean(true);
@@ -329,9 +378,11 @@ class OutboxPollerTest {
                 throw new IllegalStateException("crash after side effect");
             }
         });
-        assertThatThrownBy(() -> newPoller().poll()).isInstanceOf(IllegalStateException.class);
+        assertThat(newPoller().poll()).isZero();
         assertThat(consumer.effects()).isEqualTo(1);
         assertThat(unpublished("emp-crash")).isEqualTo(1);
+        assertThat(attempts("emp-crash")).isEqualTo(1);
+        assertThat(outboxStatus("emp-crash")).isEqualTo("PENDING");
 
         publisher.setListener(consumer::accept);
         assertThat(newPoller().poll()).isEqualTo(1);
@@ -444,6 +495,34 @@ class OutboxPollerTest {
         return jdbc.queryForList(
                 "select id from outbox where tenant_id = ? and aggregate_id = ? order by id",
                 Long.class,
+                SampleHrBatch.TENANT,
+                employeeId
+        );
+    }
+
+    private int attempts(String employeeId) {
+        Integer count = jdbc.queryForObject(
+                "select attempts from outbox where tenant_id = ? and aggregate_id = ?",
+                Integer.class,
+                SampleHrBatch.TENANT,
+                employeeId
+        );
+        return count == null ? 0 : count;
+    }
+
+    private String outboxStatus(String employeeId) {
+        return jdbc.queryForObject(
+                "select status from outbox where tenant_id = ? and aggregate_id = ?",
+                String.class,
+                SampleHrBatch.TENANT,
+                employeeId
+        );
+    }
+
+    private List<String> statuses(String employeeId) {
+        return jdbc.queryForList(
+                "select status from outbox where tenant_id = ? and aggregate_id = ? order by id",
+                String.class,
                 SampleHrBatch.TENANT,
                 employeeId
         );
