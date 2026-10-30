@@ -50,3 +50,7 @@ hr-sync:
     bucket-count: 256
     max-missing-ratio: 0.30
     operator-password: ${HR_SYNC_OPERATOR_PASSWORD:}
+  retention:
+    age: 30d
+    batch-size: 1000
+    interval: 1h
