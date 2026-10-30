@@ -131,6 +131,21 @@ The booking's `cancelled` is true after the outbox row is published. On a fresh 
 
 `GET /actuator/prometheus` with the operator token and `Accept: text/plain` returns the scrape. An admin receives 403.
 
+## Troubleshooting
+
+`password authentication failed` or a Flyway error that cannot log in as `hrsync` usually means Postgres is using a volume from an earlier run. That volume already has a password, and a new `POSTGRES_PASSWORD` does not replace it. Remove the volume and start again:
+
+```bash
+docker compose down -v
+docker compose up --build -d
+```
+
+`down -v` deletes that project's database. A leftover `COMPOSE_PROJECT_NAME` selects a different Compose project, and with it a different volume, so the same login error can appear even when `.env` is new. Unset it before `up` when this directory should be its own project.
+
+While the app is still starting, `GET /health` can reset the connection for a few seconds. It returns 200 `{"status":"UP"}` shortly after.
+
+`GET /demo/bookings` can still show `"cancelled":false` until the outbox poller publishes the deactivation. The poll interval is one second. Read the board again after that interval.
+
 ## Assumptions
 
 One app process and one Postgres. Offices exist before an HR event names them. The admin acts only in the bootstrap tenant. Tokens are HS256 JWTs that last 15 minutes. Bookings live in the same database, schema `booking_svc`, and each cancel commits on its own. The publisher logs the notice in this process. It does not call a broker. The age gauge has one-second resolution.
@@ -371,7 +386,7 @@ A rerun of that kill command after the invariant change exited 0. Of 110,600 eve
 
 ## Verification
 
-`mvn -B test` on 2026-10-30: 192 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2418 peakHeapBytes=85477824 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-30: 192 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2373 peakHeapBytes=85610272 maxHeapBytes=268435456`.
 
 ## Known limitations
 
