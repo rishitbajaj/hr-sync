@@ -14,6 +14,7 @@ import com.moveinsync.hrsync.domain.ReasonCode;
 import com.moveinsync.hrsync.domain.SyncEvent;
 import com.moveinsync.hrsync.repo.OfficeEntity;
 import com.moveinsync.hrsync.repo.OfficeRepository;
+import com.moveinsync.hrsync.service.DeactivationEventConsumer;
 import com.moveinsync.hrsync.service.LoggingEventPublisher;
 import com.moveinsync.hrsync.service.OutboxPoller;
 import com.moveinsync.hrsync.service.SyncEventService;
@@ -42,6 +43,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("demo")
@@ -71,6 +73,9 @@ class DeactivationSideEffectTest {
     private OutboxPoller poller;
 
     @Autowired
+    private DeactivationEventConsumer deactivations;
+
+    @Autowired
     private LoggingEventPublisher publisher;
 
     @Autowired
@@ -89,6 +94,8 @@ class DeactivationSideEffectTest {
     void isolate() {
         bookings.failNext(0);
         bookings.timeoutNext(0);
+        bookings.loseResponseNext(0);
+        deactivations.setAfterCancel(null);
         publisher.setListener(null);
         int spins = 0;
         while (poller.poll() > 0) {
@@ -247,6 +254,57 @@ class DeactivationSideEffectTest {
         assertThat(seatsFreed(tenant, "emp-1")).isEqualTo(1);
         assertThat(bookings.occupied("trip-1")).isZero();
         assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("PUBLISHED");
+    }
+
+    @Test
+    void aRollbackAfterTheBookingCommitsDoesNotCancelTwice() {
+        String tenant = "cab-rollback";
+        hire(tenant, "emp-1", "Ada");
+        Instant start = clock.instant().plus(Duration.ofDays(1));
+        bookings.seedTrip(tenant, "trip-1", 1);
+        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start);
+        deactivate(tenant, "emp-1", 2);
+        deactivations.setAfterCancel(() -> jdbc.execute("select 1/0"));
+
+        assertThatThrownBy(() -> poller.poll()).isInstanceOf(RuntimeException.class);
+        assertThat(bookings.isCancelled("later")).isTrue();
+        assertThat(bookings.occupied("trip-1")).isZero();
+        assertThat(effectRows(tenant, "emp-1")).isZero();
+        assertThat(outboxAttempts(tenant, "emp-1")).isZero();
+        assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("PENDING");
+
+        deactivations.setAfterCancel(null);
+        assertThat(poller.poll()).isEqualTo(1);
+        assertThat(bookings.cancelCalls()).isEqualTo(2);
+        assertThat(bookings.isCancelled("later")).isTrue();
+        assertThat(bookings.occupied("trip-1")).isZero();
+        assertThat(effectRows(tenant, "emp-1")).isEqualTo(1);
+        assertThat(seatsFreed(tenant, "emp-1")).isEqualTo(1);
+        assertThat(publishedDeactivations(tenant, "emp-1")).isEqualTo(1);
+    }
+
+    @Test
+    void aLostResponseRetriesTheSameCancellation() {
+        String tenant = "cab-lost";
+        hire(tenant, "emp-1", "Ada");
+        Instant start = clock.instant().plus(Duration.ofDays(1));
+        bookings.seedTrip(tenant, "trip-1", 1);
+        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start);
+        deactivate(tenant, "emp-1", 2);
+        bookings.loseResponseNext(1);
+
+        assertThat(poller.poll()).isZero();
+        assertThat(bookings.isCancelled("later")).isTrue();
+        assertThat(bookings.occupied("trip-1")).isZero();
+        assertThat(effectRows(tenant, "emp-1")).isZero();
+        assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("PENDING");
+
+        assertThat(poller.poll()).isEqualTo(1);
+        assertThat(bookings.cancelCalls()).isEqualTo(2);
+        assertThat(bookings.occupied("trip-1")).isZero();
+        assertThat(effectRows(tenant, "emp-1")).isEqualTo(1);
+        assertThat(seatsFreed(tenant, "emp-1")).isEqualTo(1);
+        assertThat(publishedDeactivations(tenant, "emp-1")).isEqualTo(1);
     }
 
     @Test
@@ -428,6 +486,33 @@ class DeactivationSideEffectTest {
     private long effectRows(String tenant, String employeeId) {
         Long count = jdbc.queryForObject(
                 "select count(*) from deactivation_effect where tenant_id = ? and employee_id = ?",
+                Long.class,
+                tenant,
+                employeeId
+        );
+        return count == null ? 0 : count;
+    }
+
+    private int outboxAttempts(String tenant, String employeeId) {
+        Integer attempts = jdbc.queryForObject(
+                """
+                        select attempts from outbox
+                        where tenant_id = ? and aggregate_id = ? and event_type = 'EMPLOYEE_DEACTIVATED'
+                        """,
+                Integer.class,
+                tenant,
+                employeeId
+        );
+        return attempts == null ? 0 : attempts;
+    }
+
+    private long publishedDeactivations(String tenant, String employeeId) {
+        Long count = jdbc.queryForObject(
+                """
+                        select count(*) from outbox
+                        where tenant_id = ? and aggregate_id = ? and event_type = 'EMPLOYEE_DEACTIVATED'
+                          and status = 'PUBLISHED'
+                        """,
                 Long.class,
                 tenant,
                 employeeId

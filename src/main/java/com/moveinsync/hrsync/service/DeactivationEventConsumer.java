@@ -23,6 +23,8 @@ public class DeactivationEventConsumer {
     private final BookingClient bookings;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private volatile Runnable afterCancel = () -> {
+    };
 
     public DeactivationEventConsumer(
             JdbcTemplate jdbc,
@@ -34,6 +36,11 @@ public class DeactivationEventConsumer {
         this.bookings = bookings;
         this.objectMapper = objectMapper;
         this.clock = clock;
+    }
+
+    public void setAfterCancel(Runnable afterCancel) {
+        this.afterCancel = afterCancel == null ? () -> {
+        } : afterCancel;
     }
 
     public void handle(ChangeNotice notice) {
@@ -49,6 +56,7 @@ public class DeactivationEventConsumer {
                 notice.createdAt(),
                 notice.eventId()
         );
+        afterCancel.run();
         jdbc.update(
                 """
                         insert into deactivation_effect (
