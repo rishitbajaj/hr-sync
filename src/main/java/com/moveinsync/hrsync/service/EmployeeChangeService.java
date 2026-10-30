@@ -1,6 +1,9 @@
 package com.moveinsync.hrsync.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.domain.ChangeCommand;
+import com.moveinsync.hrsync.domain.ChangedFields;
 import com.moveinsync.hrsync.domain.ChangeStore;
 import com.moveinsync.hrsync.domain.Decision;
 import com.moveinsync.hrsync.domain.EmployeeChangeApplier;
@@ -19,7 +22,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Clock;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -61,16 +66,31 @@ public class EmployeeChangeService implements ChangeStore {
             values (?, ?, ?, ?, ?, ?)
             """;
 
+    private static final String INSERT_OUTBOX = """
+            insert into outbox (tenant_id, aggregate_id, event_type, payload, created_at)
+            values (?, ?, ?, cast(? as jsonb), ?)
+            """;
+
     private final EmployeeChangeApplier applier;
     private final JdbcTemplate jdbc;
     private final RecordWork recordWork;
     private final Clock clock;
+    private final ObjectMapper objectMapper;
+    private final PersistGate persistGate;
 
-    public EmployeeChangeService(JdbcTemplate jdbc, RecordWork recordWork, Clock clock) {
+    public EmployeeChangeService(
+            JdbcTemplate jdbc,
+            RecordWork recordWork,
+            Clock clock,
+            ObjectMapper objectMapper,
+            PersistGate persistGate
+    ) {
         this.applier = new EmployeeChangeApplier(clock);
         this.jdbc = jdbc;
         this.recordWork = recordWork;
         this.clock = clock;
+        this.objectMapper = objectMapper;
+        this.persistGate = persistGate;
     }
 
     @Override
@@ -113,6 +133,8 @@ public class EmployeeChangeService implements ChangeStore {
             }
         }
         insertProcessed(command);
+        insertOutbox(command, current, next);
+        persistGate.afterPersist();
         return IngestResult.applied(command.tenantId(), command.employeeId(), command.version());
     }
 
@@ -184,6 +206,26 @@ public class EmployeeChangeService implements ChangeStore {
                 employee.tenantId(),
                 employee.employeeId(),
                 employee.transportVersion()
+        );
+    }
+
+    private void insertOutbox(ChangeCommand command, HrEmployee before, HrEmployee after) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("employeeId", command.employeeId());
+        payload.put("changedFields", ChangedFields.between(before, after, command.channel()));
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Could not write outbox payload");
+        }
+        jdbc.update(
+                INSERT_OUTBOX,
+                command.tenantId(),
+                command.employeeId(),
+                command.type().name(),
+                json,
+                Timestamp.from(clock.instant())
         );
     }
 

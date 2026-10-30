@@ -1,0 +1,9 @@
+spring:
+  task:
+    scheduling:
+      enabled: false
+
+hr-sync:
+  outbox:
+    poll-interval: 1h
+    batch-size: 20

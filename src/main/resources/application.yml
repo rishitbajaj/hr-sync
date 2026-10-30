@@ -31,3 +31,6 @@ hr-sync:
   ingest:
     max-batch-size: 1000
     max-body-bytes: 1048576
+  outbox:
+    poll-interval: 1s
+    batch-size: 100

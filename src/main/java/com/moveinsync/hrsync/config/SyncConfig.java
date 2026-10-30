@@ -11,7 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import java.time.Clock;
 
 @Configuration
-@EnableConfigurationProperties(IngestLimits.class)
+@EnableConfigurationProperties({IngestLimits.class, OutboxSettings.class})
 public class SyncConfig {
 
     @Bean
