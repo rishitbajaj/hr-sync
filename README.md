@@ -4,7 +4,7 @@ HR roster sync: idempotent, out-of-order, self-healing employee records. Postgre
 
 ## Run
 
-Copy the example env file and set every value. `HR_SYNC_JWT_SECRET` must be at least 32 bytes. There is no default for the secret or the passwords. Compose will not start with an empty value.
+Copy the example env file and set every value. `HR_SYNC_JWT_SECRET` must be at least 32 bytes. There is no default for the secret or the passwords. Compose will not start with an empty value. A variable already exported in the shell wins over `.env`.
 
 ```bash
 cp .env.example .env
@@ -379,7 +379,7 @@ A rerun of that kill command after the invariant change exited 0. Of 110,600 eve
 
 ## Verification
 
-`mvn -B test` on 2026-10-30: 186 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=3427 peakHeapBytes=87553160 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-30: 186 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=3370 peakHeapBytes=85732640 maxHeapBytes=268435456`.
 
 ## Known limitations
 
