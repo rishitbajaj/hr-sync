@@ -8,6 +8,7 @@ import com.moveinsync.hrsync.domain.ChangeStore;
 import com.moveinsync.hrsync.domain.Decision;
 import com.moveinsync.hrsync.domain.EmployeeChangeApplier;
 import com.moveinsync.hrsync.domain.EmployeeStatus;
+import com.moveinsync.hrsync.domain.EventType;
 import com.moveinsync.hrsync.domain.FieldChannel;
 import com.moveinsync.hrsync.domain.HrEmployee;
 import com.moveinsync.hrsync.domain.IngestResult;
@@ -208,6 +209,48 @@ public class EmployeeChangeService implements ChangeStore {
                 employee.tenantId(),
                 employee.employeeId(),
                 employee.transportVersion()
+        );
+    }
+
+    public boolean deactivateIfUnchanged(String tenantId, String employeeId, long hrVersion) {
+        Boolean deactivated = recordWork.call(() -> {
+            int updated = jdbc.update(
+                    """
+                            update employee
+                            set status = 'DEACTIVATED', updated_at = ?
+                            where tenant_id = ? and employee_id = ? and hr_version = ? and status = 'ACTIVE'
+                            """,
+                    Timestamp.from(clock.instant()),
+                    tenantId,
+                    employeeId,
+                    hrVersion
+            );
+            if (updated == 0) {
+                return false;
+            }
+            insertDeactivateNotice(tenantId, employeeId);
+            return true;
+        });
+        return Boolean.TRUE.equals(deactivated);
+    }
+
+    private void insertDeactivateNotice(String tenantId, String employeeId) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("employeeId", employeeId);
+        payload.put("changedFields", List.of("status"));
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Could not write outbox payload");
+        }
+        jdbc.update(
+                INSERT_OUTBOX,
+                tenantId,
+                employeeId,
+                EventType.DEACTIVATE.name(),
+                json,
+                Timestamp.from(clock.instant())
         );
     }
 
