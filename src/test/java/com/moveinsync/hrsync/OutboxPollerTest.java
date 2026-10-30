@@ -235,6 +235,80 @@ class OutboxPollerTest {
     }
 
     @Test
+    void twoSlowPollersPreservePerEmployeeOrderWithoutGaps() throws Exception {
+        int versions = 10;
+        for (int version = 1; version <= versions; version++) {
+            if (version == 1) {
+                assertThat(apply(create("emp-seq-a", 1, "A1")).outcome()).isEqualTo(Outcome.APPLIED);
+                assertThat(apply(create("emp-seq-b", 1, "B1")).outcome()).isEqualTo(Outcome.APPLIED);
+            } else {
+                assertThat(apply(rename("emp-seq-a", version, "A" + version)).outcome()).isEqualTo(Outcome.APPLIED);
+                assertThat(apply(rename("emp-seq-b", version, "B" + version)).outcome()).isEqualTo(Outcome.APPLIED);
+            }
+        }
+        publisher.clear();
+        List<Long> stored = jdbc.queryForList(
+                """
+                        select id from outbox
+                        where aggregate_id in ('emp-seq-a', 'emp-seq-b')
+                        order by id
+                        """,
+                Long.class
+        );
+        assertThat(stored).hasSize(versions * 2);
+
+        OutboxPoller first = newPoller();
+        OutboxPoller second = newPoller();
+        CountDownLatch bothPublishing = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger held = new AtomicInteger();
+        publisher.setListener(notice -> {
+            if (held.incrementAndGet() <= 2) {
+                bothPublishing.countDown();
+                await(release);
+                return;
+            }
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted");
+            }
+        });
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> left = pool.submit(() -> drain(first, "emp-seq-%"));
+            Future<?> right = pool.submit(() -> drain(second, "emp-seq-%"));
+            assertThat(bothPublishing.await(20, TimeUnit.SECONDS)).isTrue();
+            release.countDown();
+            left.get(60, TimeUnit.SECONDS);
+            right.get(60, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+
+        List<ChangeNotice> published = publisher.published().stream()
+                .filter(notice -> notice.aggregateId().startsWith("emp-seq-"))
+                .toList();
+        assertThat(published).extracting(ChangeNotice::eventId).doesNotHaveDuplicates();
+        assertThat(published).extracting(ChangeNotice::eventId).containsExactlyInAnyOrderElementsOf(stored);
+        for (String employeeId : List.of("emp-seq-a", "emp-seq-b")) {
+            List<Long> order = published.stream()
+                    .filter(notice -> employeeId.equals(notice.aggregateId()))
+                    .map(ChangeNotice::eventId)
+                    .toList();
+            List<Long> expected = jdbc.queryForList(
+                    "select id from outbox where aggregate_id = ? order by id",
+                    Long.class,
+                    employeeId
+            );
+            assertThat(order).containsExactlyElementsOf(expected);
+        }
+    }
+
+    @Test
     void crashAfterCommitBeforePublishStillDeliversOnceToADedupingConsumer() {
         apply(create("emp-crash", 1, "Ada"));
         assertThat(unpublished("emp-crash")).isEqualTo(1);
@@ -299,6 +373,37 @@ class OutboxPollerTest {
                 .doesNotContain("Nola")
                 .doesNotContain("Shore")
                 .doesNotContain("leak.example");
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(20, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("timed out waiting for the other poller");
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted");
+        }
+    }
+
+    private void drain(OutboxPoller instance, String employeePattern) {
+        int idle = 0;
+        while (unpublishedLike(employeePattern) > 0) {
+            if (instance.poll(1) == 0) {
+                idle++;
+                if (idle > 2000) {
+                    throw new IllegalStateException("poller made no progress");
+                }
+                try {
+                    Thread.sleep(2);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("interrupted");
+                }
+            } else {
+                idle = 0;
+            }
+        }
     }
 
     private OutboxPoller newPoller() {
