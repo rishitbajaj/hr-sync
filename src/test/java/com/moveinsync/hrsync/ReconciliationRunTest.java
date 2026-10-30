@@ -25,11 +25,13 @@ import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -86,6 +88,9 @@ class ReconciliationRunTest {
 
     @Autowired
     private MeterRegistry meters;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
 
     @AfterEach
     void clearHook() {
@@ -371,8 +376,9 @@ class ReconciliationRunTest {
         ResponseEntity<String> anonymous = restTemplate.postForEntity(url, null, String.class);
         assertThat(anonymous.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 
-        ResponseEntity<String> wrongPassword = restTemplate.withBasicAuth("operator", "nope")
-                .postForEntity(url, null, String.class);
+        HttpHeaders badToken = new HttpHeaders();
+        badToken.setBearerAuth("nope");
+        ResponseEntity<String> wrongPassword = restTemplate.exchange(url, HttpMethod.POST, new HttpEntity<>(badToken), String.class);
         assertThat(wrongPassword.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(deactivated(tenant)).isZero();
 
@@ -384,8 +390,8 @@ class ReconciliationRunTest {
                 new EmployeeFields("Kept", null, null, null, null, null, null, null)
         ))).get(0).outcome()).isEqualTo(Outcome.APPLIED);
 
-        ResponseEntity<String> approved = restTemplate.withBasicAuth("operator", "test-operator")
-                .postForEntity(url, null, String.class);
+        HttpHeaders operator = operatorHeaders();
+        ResponseEntity<String> approved = restTemplate.exchange(url, HttpMethod.POST, new HttpEntity<>(operator), String.class);
         assertThat(approved.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(approved.getBody()).doesNotContain("Kept").doesNotContain("@example.com");
         JsonNode body = objectMapper.readTree(approved.getBody());
@@ -399,8 +405,7 @@ class ReconciliationRunTest {
         assertThat(kept.name()).isEqualTo("Kept");
         assertThat(kept.hrVersion()).isEqualTo(2);
 
-        ResponseEntity<String> again = restTemplate.withBasicAuth("operator", "test-operator")
-                .postForEntity(url, null, String.class);
+        ResponseEntity<String> again = restTemplate.exchange(url, HttpMethod.POST, new HttpEntity<>(operator), String.class);
         assertThat(again.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(status(tenant, "emp-3")).isEqualTo("ACTIVE");
         assertThat(deactivated(tenant)).isEqualTo(1);
@@ -721,6 +726,27 @@ class ReconciliationRunTest {
                 tenant
         );
         return count == null ? 0 : count;
+    }
+
+    private HttpHeaders operatorHeaders() throws Exception {
+        jdbc.update(
+                """
+                        insert into users (id, tenant_id, username, password_hash, role, employee_id)
+                        values (?, 'platform', 'operator', ?, 'OPERATOR', null)
+                        on conflict (username) do nothing
+                        """,
+                UUID.randomUUID(),
+                passwordEncoder.encode("test-password")
+        );
+        ResponseEntity<String> login = restTemplate.postForEntity(
+                "/auth/token",
+                java.util.Map.of("username", "operator", "password", "test-password"),
+                String.class
+        );
+        assertThat(login.getStatusCode()).isEqualTo(HttpStatus.OK);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(objectMapper.readTree(login.getBody()).get("token").asText());
+        return headers;
     }
 
     private void saveOffice(String tenant) {

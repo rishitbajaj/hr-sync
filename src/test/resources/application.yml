@@ -10,8 +10,8 @@ management:
         include: health,metrics
 
 hr-sync:
-  reconciliation:
-    operator-password: test-operator
+  auth:
+    jwt-secret: 0123456789abcdef0123456789abcdef
   outbox:
     poll-interval: 1h
     batch-size: 20

@@ -66,7 +66,8 @@ class HealthSmokeTest {
                     "office",
                     "outbox",
                     "processed_event",
-                    "import_run"
+                    "import_run",
+                    "users"
             );
         }
     }

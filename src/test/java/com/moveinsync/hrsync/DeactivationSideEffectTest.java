@@ -5,6 +5,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moveinsync.hrsync.auth.DemoUserSeeder;
 import com.moveinsync.hrsync.booking.Cancellation;
 import com.moveinsync.hrsync.booking.MockBookingService;
 import com.moveinsync.hrsync.domain.EmployeeFields;
@@ -28,6 +29,7 @@ import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -230,7 +232,7 @@ class DeactivationSideEffectTest {
     }
 
     @Test
-    void aFailedDeactivationBlocksThatEmployeeUntilReplay() {
+    void aFailedDeactivationBlocksThatEmployeeUntilReplay() throws Exception {
         String tenant = "cab-failed";
         hire(tenant, "emp-1", "Ada");
         Instant start = clock.instant().plus(Duration.ofDays(1));
@@ -260,8 +262,12 @@ class DeactivationSideEffectTest {
 
         ResponseEntity<String> refused = restTemplate.getForEntity("/outbox/failed", String.class);
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        ResponseEntity<String> listed = restTemplate.withBasicAuth("operator", "test-operator")
-                .getForEntity("/outbox/failed", String.class);
+        ResponseEntity<String> listed = restTemplate.exchange(
+                "/outbox/failed",
+                HttpMethod.GET,
+                new HttpEntity<>(operatorHeaders()),
+                String.class
+        );
         assertThat(listed.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(listed.getBody()).contains("emp-1").contains(Long.toString(failedId))
                 .contains("\"attempts\":3").contains("BookingClientException")
@@ -274,8 +280,12 @@ class DeactivationSideEffectTest {
         );
         assertThat(replayRefused.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 
-        ResponseEntity<String> replayed = restTemplate.withBasicAuth("operator", "test-operator")
-                .postForEntity("/outbox/" + failedId + "/replay", HttpEntity.EMPTY, String.class);
+        ResponseEntity<String> replayed = restTemplate.exchange(
+                "/outbox/" + failedId + "/replay",
+                HttpMethod.POST,
+                new HttpEntity<>(operatorHeaders()),
+                String.class
+        );
         assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 
         bookings.failNext(0);
@@ -288,13 +298,17 @@ class DeactivationSideEffectTest {
         assertThat(poller.poll()).isEqualTo(1);
         assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("PUBLISHED");
 
-        ResponseEntity<String> again = restTemplate.withBasicAuth("operator", "test-operator")
-                .postForEntity("/outbox/" + failedId + "/replay", HttpEntity.EMPTY, String.class);
+        ResponseEntity<String> again = restTemplate.exchange(
+                "/outbox/" + failedId + "/replay",
+                HttpMethod.POST,
+                new HttpEntity<>(operatorHeaders()),
+                String.class
+        );
         assertThat(again.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
     }
 
     @Test
-    void discardingAFailedDeactivationIsAuditedAndUnblocks() {
+    void discardingAFailedDeactivationIsAuditedAndUnblocks() throws Exception {
         String tenant = "cab-discard";
         hire(tenant, "emp-1", "Ada");
         bookings.failNext(Integer.MAX_VALUE);
@@ -304,26 +318,30 @@ class DeactivationSideEffectTest {
         assertThat(poller.poll()).isZero();
         long failedId = failedEventId(tenant, "emp-1");
 
-        HttpHeaders headers = new HttpHeaders();
+        HttpHeaders headers = operatorHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        ResponseEntity<String> blank = restTemplate.withBasicAuth("operator", "test-operator")
-                .postForEntity("/outbox/" + failedId + "/discard", new HttpEntity<>("{\"reason\":\" \"}", headers), String.class);
+        ResponseEntity<String> blank = restTemplate.postForEntity(
+                "/outbox/" + failedId + "/discard",
+                new HttpEntity<>("{\"reason\":\" \"}", headers),
+                String.class
+        );
         assertThat(blank.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("FAILED");
 
+        HttpHeaders anonymous = new HttpHeaders();
+        anonymous.setContentType(MediaType.APPLICATION_JSON);
         ResponseEntity<String> refused = restTemplate.postForEntity(
                 "/outbox/" + failedId + "/discard",
-                new HttpEntity<>("{\"reason\":\"poison event\"}", headers),
+                new HttpEntity<>("{\"reason\":\"poison event\"}", anonymous),
                 String.class
         );
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 
-        ResponseEntity<String> discarded = restTemplate.withBasicAuth("operator", "test-operator")
-                .postForEntity(
-                        "/outbox/" + failedId + "/discard",
-                        new HttpEntity<>("{\"reason\":\"poison event\"}", headers),
-                        String.class
-                );
+        ResponseEntity<String> discarded = restTemplate.postForEntity(
+                "/outbox/" + failedId + "/discard",
+                new HttpEntity<>("{\"reason\":\"poison event\"}", headers),
+                String.class
+        );
         assertThat(discarded.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
         assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("DISCARDED");
         assertThat(jdbc.queryForObject(
@@ -490,8 +508,12 @@ class DeactivationSideEffectTest {
         JsonNode halted = objectMapper.readTree(started.getBody());
         assertThat(halted.get("status").asText()).isEqualTo("HALTED");
 
-        ResponseEntity<String> approved = restTemplate.withBasicAuth("operator", "test-operator")
-                .postForEntity("/reconciliation/runs/" + halted.get("id").asText() + "/approve", null, String.class);
+        ResponseEntity<String> approved = restTemplate.exchange(
+                "/reconciliation/runs/" + halted.get("id").asText() + "/approve",
+                HttpMethod.POST,
+                new HttpEntity<>(operatorHeaders()),
+                String.class
+        );
         assertThat(approved.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(poller.poll()).isEqualTo(1);
 
@@ -625,6 +647,18 @@ class DeactivationSideEffectTest {
         assertThat(bookings.occupied("trip-1")).isZero();
         assertThat(seatsFreed(tenant, "emp-1")).isEqualTo(1);
         assertThat(effectRows(tenant, "emp-1")).isEqualTo(1);
+    }
+
+    private HttpHeaders operatorHeaders() throws Exception {
+        ResponseEntity<String> login = restTemplate.postForEntity(
+                "/auth/token",
+                java.util.Map.of("username", DemoUserSeeder.OPERATOR, "password", DemoUserSeeder.PASSWORD),
+                String.class
+        );
+        assertThat(login.getStatusCode()).isEqualTo(HttpStatus.OK);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(objectMapper.readTree(login.getBody()).get("token").asText());
+        return headers;
     }
 
     private void hire(String tenant, String employeeId, String name) {

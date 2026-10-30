@@ -21,9 +21,22 @@ class RequiredSecretsTest {
     }
 
     @Test
-    void missingOperatorPasswordNamesTheVariable() {
-        assertThatThrownBy(() -> RequiredSecrets.requireOperatorPassword(null))
+    void missingJwtSecretNamesTheVariable() {
+        assertThatThrownBy(() -> RequiredSecrets.requireJwtSecret(null))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessage(RequiredSecrets.OPERATOR_PASSWORD);
+                .hasMessage(RequiredSecrets.JWT_SECRET);
+    }
+
+    @Test
+    void aShortJwtSecretIsRejected() {
+        assertThatThrownBy(() -> RequiredSecrets.requireJwtSecret("too-short"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage(RequiredSecrets.JWT_SECRET);
+    }
+
+    @Test
+    void aJwtSecretOf32BytesIsAccepted() {
+        assertThatCode(() -> RequiredSecrets.requireJwtSecret("0123456789abcdef0123456789abcdef"))
+                .doesNotThrowAnyException();
     }
 }

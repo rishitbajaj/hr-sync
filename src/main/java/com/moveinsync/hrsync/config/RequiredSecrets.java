@@ -8,14 +8,16 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 
+import java.nio.charset.StandardCharsets;
+
 @Configuration
 public class RequiredSecrets {
 
     static final String DATASOURCE_PASSWORD =
             "SPRING_DATASOURCE_PASSWORD is required. Set it in the environment or in .env. There is no default.";
 
-    static final String OPERATOR_PASSWORD =
-            "HR_SYNC_OPERATOR_PASSWORD is required. Set it in the environment or in .env. There is no default.";
+    static final String JWT_SECRET =
+            "HR_SYNC_JWT_SECRET is required and must be at least 32 bytes. Set it in the environment. There is no default.";
 
     @Bean
     static BeanFactoryPostProcessor requiredSecretsCheck() {
@@ -31,9 +33,9 @@ public class RequiredSecrets {
         }
     }
 
-    static void requireOperatorPassword(String password) {
-        if (password == null || password.isBlank()) {
-            throw new IllegalStateException(OPERATOR_PASSWORD);
+    static void requireJwtSecret(String secret) {
+        if (secret == null || secret.isBlank() || secret.getBytes(StandardCharsets.UTF_8).length < 32) {
+            throw new IllegalStateException(JWT_SECRET);
         }
     }
 
@@ -48,7 +50,7 @@ public class RequiredSecrets {
 
         @Override
         public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) {
-            requireOperatorPassword(environment.getProperty("hr-sync.reconciliation.operator-password"));
+            requireJwtSecret(environment.getProperty("hr-sync.auth.jwt-secret"));
             requireDatasourcePassword(
                     environment.getProperty("spring.datasource.password"),
                     hasExternalConnection(beanFactory)

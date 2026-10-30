@@ -46,10 +46,14 @@ hr-sync:
     max-attempts: 5
     retry-base: 500ms
     retry-max-delay: 30s
+  auth:
+    jwt-secret: ${HR_SYNC_JWT_SECRET:}
+    token-ttl: 15m
+    max-login-failures: 5
+    login-lockout: 15m
   reconciliation:
     bucket-count: 256
     max-missing-ratio: 0.30
-    operator-password: ${HR_SYNC_OPERATOR_PASSWORD:}
   retention:
     age: 30d
     batch-size: 1000
