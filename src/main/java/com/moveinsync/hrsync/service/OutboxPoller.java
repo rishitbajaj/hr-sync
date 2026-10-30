@@ -46,6 +46,7 @@ public class OutboxPoller {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final DeactivationEventConsumer deactivations;
     private final EventPublisher publisher;
     private final OutboxPublishGuard guard;
     private final OutboxSettings settings;
@@ -55,6 +56,7 @@ public class OutboxPoller {
     public OutboxPoller(
             JdbcTemplate jdbc,
             PlatformTransactionManager transactionManager,
+            DeactivationEventConsumer deactivations,
             EventPublisher publisher,
             OutboxPublishGuard guard,
             OutboxSettings settings,
@@ -63,6 +65,7 @@ public class OutboxPoller {
     ) {
         this.jdbc = jdbc;
         this.transactions = new TransactionTemplate(transactionManager);
+        this.deactivations = deactivations;
         this.publisher = publisher;
         this.guard = guard;
         this.settings = settings;
@@ -94,6 +97,7 @@ public class OutboxPoller {
         for (Claimed claimedRow : claimed) {
             guard.beforePublish(claimedRow.notice());
             try {
+                deactivations.handle(claimedRow.notice());
                 publisher.publish(claimedRow.notice());
             } catch (RuntimeException exception) {
                 recordFailure(claimedRow, exception);
