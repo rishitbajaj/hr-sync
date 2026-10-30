@@ -9,6 +9,8 @@ import com.moveinsync.hrsync.domain.SyncEvent;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
@@ -137,11 +139,22 @@ public class ReconciliationService {
     }
 
     private ReconciliationRunResponse reconcile(Path temp) {
+        String tenantId = declaredTenant(temp);
+        UUID id = insertRun(tenantId);
+        try {
+            return reconcileClaimed(temp, tenantId, id);
+        } catch (RuntimeException exception) {
+            markFailed(id, tenantId, exception);
+            throw exception;
+        }
+    }
+
+    private ReconciliationRunResponse reconcileClaimed(Path temp, String tenantId, UUID id) {
         int bucketCount = bucketCount();
         BucketDigest[] exported = digests(bucketCount);
         ExportScan scan = scanExport(temp, exported);
         BucketDigest[] stored = digests(bucketCount);
-        scanStore(scan.tenantId(), (employeeId, version, name, email, phone, manager, office, shift) ->
+        scanStore(tenantId, (employeeId, version, name, email, phone, manager, office, shift) ->
                 stored[RosterHash.bucket(employeeId, bucketCount)].add(
                         RosterHash.record(employeeId, version, name, email, phone, manager, office, shift)
                 ));
@@ -160,57 +173,75 @@ public class ReconciliationService {
 
         Map<String, Head> heads = dirty.isEmpty()
                 ? Map.of()
-                : loadHeads(scan.tenantId(), dirty, bucketCount);
-        UUID id = insertRun(scan.tenantId());
-        try {
-            hooks.beforeApply();
-            Diff diff = dirty.isEmpty()
-                    ? new Diff(unchanged, 0, 0, 0)
-                    : classify(temp, scan.tenantId(), dirty, bucketCount, heads, unchanged);
-            if (exceedsMissingRatio(diff.toDeactivate(), activeCount)) {
-                saveCandidates(id, heads);
-                finish(id, "HALTED", diff, activeCount, scan.rowCount(), HALT_REASON);
-                meters.counter("reconciliation.halted", "reason", HALT_REASON).increment();
-                ReconciliationRunResponse halted = get(id);
-                log.warn(
-                        "reconciliation halted runId={} tenantId={} missingCount={} activeCount={} ratio={} threshold={} reason={}",
-                        halted.id(),
-                        halted.tenantId(),
-                        halted.missingCount(),
-                        halted.activeCount(),
-                        halted.missingRatio(),
-                        halted.threshold(),
-                        halted.haltReason()
-                );
-                return halted;
-            }
-            deactivateMissing(scan.tenantId(), heads);
-            finish(id, "COMPLETED", diff, activeCount, scan.rowCount(), null);
-            ReconciliationRunResponse response = get(id);
-            log.info(
-                    "reconciliation runId={} tenantId={} status={} unchanged={} toCreate={} toUpdate={} toDeactivate={} missingCount={} activeCount={} exportRowCount={}",
-                    response.id(),
-                    response.tenantId(),
-                    response.status(),
-                    response.unchanged(),
-                    response.toCreate(),
-                    response.toUpdate(),
-                    response.toDeactivate(),
-                    response.missingCount(),
-                    response.activeCount(),
-                    response.exportRowCount()
-            );
-            return response;
-        } catch (RuntimeException exception) {
-            finish(id, "FAILED", new Diff(unchanged, 0, 0, 0), activeCount, scan.rowCount(), null);
+                : loadHeads(tenantId, dirty, bucketCount);
+        hooks.beforeApply();
+        Diff diff = dirty.isEmpty()
+                ? new Diff(unchanged, 0, 0, 0)
+                : classify(temp, tenantId, dirty, bucketCount, heads, unchanged);
+        if (exceedsMissingRatio(diff.toDeactivate(), activeCount)) {
+            saveCandidates(id, heads);
+            finish(id, "HALTED", diff, activeCount, scan.rowCount(), HALT_REASON);
+            meters.counter("reconciliation.halted", "reason", HALT_REASON).increment();
+            ReconciliationRunResponse halted = get(id);
             log.warn(
-                    "reconciliation failed runId={} tenantId={} error={}",
-                    id,
-                    scan.tenantId(),
-                    exception.getClass().getSimpleName()
+                    "reconciliation halted runId={} tenantId={} missingCount={} activeCount={} ratio={} threshold={} reason={}",
+                    halted.id(),
+                    halted.tenantId(),
+                    halted.missingCount(),
+                    halted.activeCount(),
+                    halted.missingRatio(),
+                    halted.threshold(),
+                    halted.haltReason()
             );
-            throw exception;
+            return halted;
         }
+        deactivateMissing(tenantId, heads);
+        finish(id, "COMPLETED", diff, activeCount, scan.rowCount(), null);
+        ReconciliationRunResponse response = get(id);
+        log.info(
+                "reconciliation runId={} tenantId={} status={} unchanged={} toCreate={} toUpdate={} toDeactivate={} missingCount={} activeCount={} exportRowCount={}",
+                response.id(),
+                response.tenantId(),
+                response.status(),
+                response.unchanged(),
+                response.toCreate(),
+                response.toUpdate(),
+                response.toDeactivate(),
+                response.missingCount(),
+                response.activeCount(),
+                response.exportRowCount()
+        );
+        return response;
+    }
+
+    private String declaredTenant(Path temp) {
+        try (InputStream input = Files.newInputStream(temp)) {
+            RosterRow first = ExportCsv.first(input);
+            if (first == null) {
+                throw new ReconciliationException("Reconciliation export has no rows");
+            }
+            return first.tenantId();
+        } catch (IOException exception) {
+            throw new ReconciliationException("Could not read reconciliation export");
+        }
+    }
+
+    private void markFailed(UUID id, String tenantId, RuntimeException exception) {
+        jdbc.update(
+                """
+                        update import_run
+                        set status = 'FAILED', finished_at = ?
+                        where id = ? and status = 'RUNNING'
+                        """,
+                Timestamp.from(clock.instant()),
+                id
+        );
+        log.warn(
+                "reconciliation failed runId={} tenantId={} error={}",
+                id,
+                tenantId,
+                exception.getClass().getSimpleName()
+        );
     }
 
     private Diff classify(
@@ -410,16 +441,39 @@ public class ReconciliationService {
 
     private UUID insertRun(String tenantId) {
         UUID id = UUID.randomUUID();
-        jdbc.update(
-                """
-                        insert into import_run (id, tenant_id, status, started_at)
-                        values (?, ?, 'RUNNING', ?)
-                        """,
-                id,
-                tenantId,
-                Timestamp.from(clock.instant())
-        );
+        try {
+            jdbc.update(
+                    """
+                            insert into import_run (id, tenant_id, status, started_at)
+                            values (?, ?, 'RUNNING', ?)
+                            """,
+                    id,
+                    tenantId,
+                    Timestamp.from(clock.instant())
+            );
+        } catch (DataAccessException exception) {
+            if (isUniqueViolation(exception)) {
+                throw new ReconciliationConflictException(
+                        "A reconciliation run is already running for this tenant"
+                );
+            }
+            throw exception;
+        }
         return id;
+    }
+
+    private static boolean isUniqueViolation(DataAccessException exception) {
+        if (exception instanceof DuplicateKeyException) {
+            return true;
+        }
+        Throwable current = exception;
+        while (current != null) {
+            if (current instanceof SQLException sql && "23505".equals(sql.getSQLState())) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void finish(UUID id, String status, Diff diff, int activeCount, int exportRowCount, String haltReason) {

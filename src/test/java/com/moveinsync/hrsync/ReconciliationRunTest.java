@@ -10,6 +10,7 @@ import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.SyncEvent;
 import com.moveinsync.hrsync.repo.OfficeEntity;
 import com.moveinsync.hrsync.repo.OfficeRepository;
+import com.moveinsync.hrsync.service.InterruptedRuns;
 import com.moveinsync.hrsync.service.ReconciliationHooks;
 import com.moveinsync.hrsync.service.SyncEventService;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -42,6 +43,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -76,6 +80,9 @@ class ReconciliationRunTest {
 
     @Autowired
     private ReconciliationSettings settings;
+
+    @Autowired
+    private InterruptedRuns interruptedRuns;
 
     @Autowired
     private MeterRegistry meters;
@@ -398,14 +405,97 @@ class ReconciliationRunTest {
         assertThat(deactivated(tenant)).isEqualTo(1);
     }
 
-    private JsonNode postCsv(byte[] csv) throws Exception {
+    @Test
+    void aSecondRunForTheSameTenantIsRejectedWhileTheFirstIsRunning() throws Exception {
+        String tenant = "recon-lock";
+        seedRoster(tenant, 4);
+        byte[] body = csv(tenant, exportFirst(tenant, 3)).getBytes(StandardCharsets.UTF_8);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        hooks.setBeforeApply(() -> {
+            entered.countDown();
+            try {
+                if (!release.await(30, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("timed out waiting to finish the first reconciliation");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(exception);
+            }
+        });
+        AtomicReference<ResponseEntity<String>> first = new AtomicReference<>();
+        AtomicReference<Exception> failure = new AtomicReference<>();
+        Thread runner = new Thread(() -> {
+            try {
+                first.set(postRaw(body));
+            } catch (Exception exception) {
+                failure.set(exception);
+            }
+        });
+        runner.start();
+        try {
+            assertThat(entered.await(30, TimeUnit.SECONDS)).isTrue();
+            ResponseEntity<String> second = postRaw(body);
+            assertThat(second.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+            assertThat(second.getBody()).contains("already running");
+            assertThat(second.getBody()).doesNotContain("@example.com").doesNotContain("Person");
+        } finally {
+            release.countDown();
+            runner.join(30_000);
+        }
+        assertThat(failure.get()).isNull();
+        assertThat(first.get().getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode completed = objectMapper.readTree(first.get().getBody());
+        assertThat(completed.get("status").asText()).isEqualTo("COMPLETED");
+        assertThat(completed.get("toDeactivate").asInt()).isEqualTo(1);
+        assertThat(deactivated(tenant)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "select count(*) from import_run where tenant_id = ?",
+                Long.class,
+                tenant
+        )).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "select count(*) from outbox where tenant_id = ? and event_type = 'DEACTIVATE'",
+                Long.class,
+                tenant
+        )).isEqualTo(1);
+    }
+
+    @Test
+    void restartMarksAnInterruptedRunFailedAndANewRunWorks() throws Exception {
+        String tenant = "recon-interrupt";
+        saveOffice(tenant);
+        create(tenant, "emp-1", 1, "Pat");
+        UUID id = UUID.randomUUID();
+        jdbc.update(
+                "insert into import_run (id, tenant_id, status, started_at) values (?, ?, 'RUNNING', ?)",
+                id,
+                tenant,
+                Timestamp.from(Instant.parse("2026-10-30T00:00:00Z"))
+        );
+
+        interruptedRuns.markInterrupted();
+
+        JsonNode failed = getRun(id.toString());
+        assertThat(failed.get("status").asText()).isEqualTo("FAILED");
+        assertThat(failed.get("haltReason").asText()).isEqualTo("INTERRUPTED");
+        JsonNode again = postCsv(csv(tenant, stored(tenant)));
+        assertThat(again.get("status").asText()).isEqualTo("COMPLETED");
+        assertThat(status(tenant, "emp-1")).isEqualTo("ACTIVE");
+    }
+
+    private ResponseEntity<String> postRaw(byte[] csv) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.parseMediaType("text/csv"));
-        ResponseEntity<String> response = restTemplate.postForEntity(
+        return restTemplate.postForEntity(
                 "/reconciliation/runs",
                 new HttpEntity<>(csv, headers),
                 String.class
         );
+    }
+
+    private JsonNode postCsv(byte[] csv) throws Exception {
+        ResponseEntity<String> response = postRaw(csv);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).doesNotContain("@example.com", "Nola", "Gate 9", "Live Winner", "Same, Person");
         return objectMapper.readTree(response.getBody());

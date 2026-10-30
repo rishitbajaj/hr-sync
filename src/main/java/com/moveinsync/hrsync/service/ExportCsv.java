@@ -35,6 +35,29 @@ public final class ExportCsv {
         }
     }
 
+    public static RosterRow first(InputStream input) throws IOException {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            boolean headerChecked = false;
+            List<String> row;
+            while ((row = readRow(reader)) != null) {
+                if (row.isEmpty()) {
+                    continue;
+                }
+                if (!headerChecked) {
+                    headerChecked = true;
+                    if (isHeader(row)) {
+                        continue;
+                    }
+                }
+                if (row.size() != 9) {
+                    throw new ReconciliationException("Invalid reconciliation export");
+                }
+                return RosterRow.from(row);
+            }
+            return null;
+        }
+    }
+
     private static boolean isHeader(List<String> row) {
         return row.size() >= 2
                 && "tenantId".equals(row.get(0))
