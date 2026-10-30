@@ -54,7 +54,7 @@ Before applying, the batch is sorted by tenant, employee, then `source_version`.
 
 Office transfer version 7 arrives, then shift change version 6. Version 7 is `APPLIED`. Version 6 is `STALE_IGNORED`. The employee remains in the version 7 office with the version 7 shift and `hr_version` 7.
 
-The same feed is posted again. Every second-pass result is `DUPLICATE` or `STALE_IGNORED`. Names, contact fields, office, pickup point, assistance, both versions, status, and `updated_at` stay as they were.
+The same feed is posted again. Every second-pass result is `DUPLICATE`, because each version was applied and is already in `processed_event`. Names, contact fields, office, pickup point, assistance, both versions, status, and `updated_at` stay as they were. `STALE_IGNORED` is reserved for a version that was never applied and is not newer than the stored channel version.
 
 Update version 5 arrives for employee `emp-tomb-u` before any create. The row is `PLACEHOLDER` at that version, so it is left out of the active count and out of a normal read. Create version 3 is `STALE_IGNORED` and the version 5 fields remain. Create version 8 is the first real create: the row becomes `ACTIVE` and a normal read returns it.
 
