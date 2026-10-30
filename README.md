@@ -167,6 +167,8 @@ That runs the tests and then the reconciliation benchmark in a forked JVM with `
 
 Load tests use `load/docker-compose.yml` (ports 5442 and 8092) and are described in `load/README.md`.
 
+`python3 scripts/generate-exports.py` writes a 200,000-row export and a 120,000-row prefix under `scripts/out/`. `scripts/demo.sh` runs the walkthrough above and prints each response. It reads `.env` and talks to `BASE_URL` (default `http://localhost:8080`).
+
 ## Reconciliation benchmark
 
 Seeding the store is not included in the time. Peak heap is the highest `MemoryMXBean` heap used, sampled every 5 ms during the diff, after a garbage collection that followed the seed. A heap pool's own peak is used when it is higher than those samples. The identical 200,000-row row is `ReconciliationBenchmarkTest`, excluded from the default Surefire run and executed with `mvn surefire:test@reconciliation-benchmark` (`-Xmx256m`, `Runtime.maxMemory` 268,435,456 bytes). The other rows used the same measurement on 2026-10-30. The 400,000-row run and the mixed run were a temporary test, not part of the suite.
