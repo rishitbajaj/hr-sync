@@ -1,5 +1,6 @@
 package com.moveinsync.hrsync.api;
 
+import com.moveinsync.hrsync.auth.Callers;
 import com.moveinsync.hrsync.service.ReconciliationService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,7 +26,7 @@ public class ReconciliationController {
             @RequestParam(name = "tenantId", required = false) String tenantId,
             HttpServletRequest request
     ) throws IOException {
-        return reconciliation.run(tenantId, request.getInputStream());
+        return reconciliation.run(Callers.tenant(tenantId), request.getInputStream());
     }
 
     @GetMapping("/reconciliation/runs/{id}")
@@ -33,11 +34,14 @@ public class ReconciliationController {
             @PathVariable UUID id,
             @RequestParam(name = "tenantId", required = false) String tenantId
     ) {
-        return reconciliation.get(id, tenantId);
+        return reconciliation.get(id, Callers.tenant(tenantId));
     }
 
     @PostMapping("/reconciliation/runs/{id}/approve")
-    public ReconciliationRunResponse approve(@PathVariable UUID id) {
-        return reconciliation.approve(id);
+    public ReconciliationRunResponse approve(
+            @PathVariable UUID id,
+            @RequestParam(name = "tenantId", required = false) String tenantId
+    ) {
+        return reconciliation.approve(id, Callers.tenant(tenantId));
     }
 }

@@ -268,7 +268,7 @@ class DeactivationSideEffectTest {
         ResponseEntity<String> refused = restTemplate.getForEntity("/outbox/failed", String.class);
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         ResponseEntity<String> listed = restTemplate.exchange(
-                "/outbox/failed",
+                "/outbox/failed?tenantId=" + tenant,
                 HttpMethod.GET,
                 new HttpEntity<>(operatorHeaders()),
                 String.class
@@ -279,14 +279,14 @@ class DeactivationSideEffectTest {
                 .doesNotContain("Ada").doesNotContain("emp-1@example.com");
 
         ResponseEntity<String> replayRefused = restTemplate.postForEntity(
-                "/outbox/" + failedId + "/replay",
+                "/outbox/" + failedId + "/replay?tenantId=" + tenant,
                 HttpEntity.EMPTY,
                 String.class
         );
         assertThat(replayRefused.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 
         ResponseEntity<String> replayed = restTemplate.exchange(
-                "/outbox/" + failedId + "/replay",
+                "/outbox/" + failedId + "/replay?tenantId=" + tenant,
                 HttpMethod.POST,
                 new HttpEntity<>(operatorHeaders()),
                 String.class
@@ -304,7 +304,7 @@ class DeactivationSideEffectTest {
         assertThat(outboxStatus(tenant, "emp-1")).isEqualTo("PUBLISHED");
 
         ResponseEntity<String> again = restTemplate.exchange(
-                "/outbox/" + failedId + "/replay",
+                "/outbox/" + failedId + "/replay?tenantId=" + tenant,
                 HttpMethod.POST,
                 new HttpEntity<>(operatorHeaders()),
                 String.class
@@ -326,7 +326,7 @@ class DeactivationSideEffectTest {
         HttpHeaders headers = operatorHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         ResponseEntity<String> blank = restTemplate.postForEntity(
-                "/outbox/" + failedId + "/discard",
+                "/outbox/" + failedId + "/discard?tenantId=" + tenant,
                 new HttpEntity<>("{\"reason\":\" \"}", headers),
                 String.class
         );
@@ -336,14 +336,14 @@ class DeactivationSideEffectTest {
         HttpHeaders anonymous = new HttpHeaders();
         anonymous.setContentType(MediaType.APPLICATION_JSON);
         ResponseEntity<String> refused = restTemplate.postForEntity(
-                "/outbox/" + failedId + "/discard",
+                "/outbox/" + failedId + "/discard?tenantId=" + tenant,
                 new HttpEntity<>("{\"reason\":\"poison event\"}", anonymous),
                 String.class
         );
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
 
         ResponseEntity<String> discarded = restTemplate.postForEntity(
-                "/outbox/" + failedId + "/discard",
+                "/outbox/" + failedId + "/discard?tenantId=" + tenant,
                 new HttpEntity<>("{\"reason\":\"poison event\"}", headers),
                 String.class
         );
@@ -514,7 +514,7 @@ class DeactivationSideEffectTest {
         assertThat(halted.get("status").asText()).isEqualTo("HALTED");
 
         ResponseEntity<String> approved = restTemplate.exchange(
-                "/reconciliation/runs/" + halted.get("id").asText() + "/approve",
+                "/reconciliation/runs/" + halted.get("id").asText() + "/approve?tenantId=" + tenant,
                 HttpMethod.POST,
                 new HttpEntity<>(operatorHeaders()),
                 String.class

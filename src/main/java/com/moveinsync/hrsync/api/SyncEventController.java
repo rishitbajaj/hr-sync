@@ -1,5 +1,6 @@
 package com.moveinsync.hrsync.api;
 
+import com.moveinsync.hrsync.auth.Callers;
 import com.moveinsync.hrsync.config.IngestLimits;
 import com.moveinsync.hrsync.domain.EmployeeFields;
 import com.moveinsync.hrsync.domain.EventType;
@@ -25,38 +26,43 @@ public class SyncEventController {
 
     @PostMapping("/sync/events")
     public SyncBatchResponse sync(@RequestBody SyncBatchRequest request) {
-        List<SyncEvent> events = checked(request).stream().map(SyncEventController::toDomain).toList();
+        List<SyncEventRequest> incoming = accepted(request);
+        List<SyncEvent> events = incoming.stream().map(event -> toDomain(event, Callers.require().tenantId())).toList();
         return SyncBatchResponse.from(syncEventService.ingest(events, FieldChannel.HR));
     }
 
     @PostMapping("/sync/transport-events")
     public SyncBatchResponse transport(@RequestBody SyncBatchRequest request) {
-        List<SyncEvent> events = checked(request).stream().map(SyncEventController::toTransport).toList();
+        List<SyncEventRequest> incoming = accepted(request);
+        List<SyncEvent> events = incoming.stream().map(event -> toTransport(event, Callers.require().tenantId())).toList();
         return SyncBatchResponse.from(syncEventService.ingest(events, FieldChannel.TRANSPORT));
     }
 
-    private List<SyncEventRequest> checked(SyncBatchRequest request) {
+    private List<SyncEventRequest> accepted(SyncBatchRequest request) {
         List<SyncEventRequest> incoming = request.events() == null ? List.of() : request.events();
         if (incoming.size() > limits.getMaxBatchSize()) {
             throw new BatchTooLargeException(limits.getMaxBatchSize());
         }
+        for (SyncEventRequest event : incoming) {
+            Callers.tenant(event == null ? null : event.tenantId());
+        }
         return incoming;
     }
 
-    private static SyncEvent toTransport(SyncEventRequest request) {
-        SyncEvent event = toDomain(request);
+    private static SyncEvent toTransport(SyncEventRequest request, String tenant) {
+        SyncEvent event = toDomain(request, tenant);
         if (event.type() != null) {
             return event;
         }
         return new SyncEvent(event.tenantId(), event.employeeId(), event.sourceVersion(), EventType.UPDATE, event.fields());
     }
 
-    private static SyncEvent toDomain(SyncEventRequest request) {
+    private static SyncEvent toDomain(SyncEventRequest request, String tenant) {
         if (request == null) {
-            return new SyncEvent(null, null, null, null, null);
+            return new SyncEvent(tenant, null, null, null, null);
         }
         return new SyncEvent(
-                request.tenantId(),
+                tenant,
                 request.employeeId(),
                 request.sourceVersion(),
                 EventType.parse(request.type()),

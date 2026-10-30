@@ -22,12 +22,12 @@ public class OutboxOperatorService {
         this.clock = clock;
     }
 
-    public List<FailedOutboxRow> failed() {
+    public List<FailedOutboxRow> failed(String tenantId) {
         return jdbc.query(
                 """
                         select id, aggregate_id, attempts, failure_reason
                         from outbox
-                        where status = 'FAILED'
+                        where status = 'FAILED' and tenant_id = ?
                         order by id
                         """,
                 (rs, row) -> new FailedOutboxRow(
@@ -35,26 +35,28 @@ public class OutboxOperatorService {
                         rs.getLong("id"),
                         rs.getInt("attempts"),
                         rs.getString("failure_reason")
-                )
+                ),
+                tenantId
         );
     }
 
-    public void replay(long eventId) {
+    public void replay(long eventId, String tenantId) {
         int updated = jdbc.update(
                 """
                         update outbox
                         set status = 'PENDING', attempts = 0, next_attempt_at = ?, failure_reason = null
-                        where id = ? and status = 'FAILED'
+                        where id = ? and tenant_id = ? and status = 'FAILED'
                         """,
                 Timestamp.from(clock.instant()),
-                eventId
+                eventId,
+                tenantId
         );
         if (updated != 1) {
-            throw missingOrConflict(eventId);
+            throw missingOrConflict(eventId, tenantId);
         }
     }
 
-    public void discard(long eventId, String reason) {
+    public void discard(long eventId, String tenantId, String reason) {
         if (reason == null || reason.isBlank() || reason.trim().length() > 500) {
             throw new OutboxRejectedException("A reason is required");
         }
@@ -64,12 +66,13 @@ public class OutboxOperatorService {
                     """
                             update outbox
                             set status = 'DISCARDED', next_attempt_at = null
-                            where id = ? and status = 'FAILED'
+                            where id = ? and tenant_id = ? and status = 'FAILED'
                             """,
-                    eventId
+                    eventId,
+                    tenantId
             );
             if (updated != 1) {
-                throw missingOrConflict(eventId);
+                throw missingOrConflict(eventId, tenantId);
             }
             jdbc.update(
                     """
@@ -83,11 +86,12 @@ public class OutboxOperatorService {
         });
     }
 
-    private RuntimeException missingOrConflict(long eventId) {
+    private RuntimeException missingOrConflict(long eventId, String tenantId) {
         List<String> statuses = jdbc.query(
-                "select status from outbox where id = ?",
+                "select status from outbox where id = ? and tenant_id = ?",
                 (rs, row) -> rs.getString(1),
-                eventId
+                eventId,
+                tenantId
         );
         if (statuses.isEmpty()) {
             throw new OutboxNotFoundException("Outbox event was not found");

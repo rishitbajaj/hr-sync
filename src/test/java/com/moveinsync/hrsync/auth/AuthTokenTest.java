@@ -76,7 +76,7 @@ class AuthTokenTest {
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(token);
         ResponseEntity<String> failed = restTemplate.exchange(
-                "/outbox/failed",
+                "/outbox/failed?tenantId=acme",
                 HttpMethod.GET,
                 new HttpEntity<>(headers),
                 String.class
@@ -125,7 +125,7 @@ class AuthTokenTest {
     private ResponseEntity<String> call(String token) {
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(token);
-        return restTemplate.exchange("/outbox/failed", HttpMethod.GET, new HttpEntity<>(headers), String.class);
+        return restTemplate.exchange("/outbox/failed?tenantId=acme", HttpMethod.GET, new HttpEntity<>(headers), String.class);
     }
 
     private ResponseEntity<String> login(String username, String password) {

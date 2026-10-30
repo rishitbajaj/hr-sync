@@ -111,10 +111,11 @@ public class OutboxPoller {
                     """
                             update outbox
                             set published_at = ?, status = 'PUBLISHED', next_attempt_at = null, failure_reason = null
-                            where id = ?
+                            where id = ? and tenant_id = ?
                             """,
                     Timestamp.from(clock.instant()),
-                    claimedRow.notice().eventId()
+                    claimedRow.notice().eventId(),
+                    claimedRow.notice().tenantId()
             );
             delivered++;
         }
@@ -129,11 +130,12 @@ public class OutboxPoller {
                     """
                             update outbox
                             set attempts = ?, status = 'FAILED', next_attempt_at = null, failure_reason = ?
-                            where id = ?
+                            where id = ? and tenant_id = ?
                             """,
                     attempts,
                     reasonCode(exception),
-                    notice.eventId()
+                    notice.eventId(),
+                    notice.tenantId()
             );
             log.warn(
                     "outbox publish exhausted eventId={} tenantId={} aggregateId={} attempts={} error={}",
@@ -150,12 +152,13 @@ public class OutboxPoller {
                 """
                 update outbox
                 set attempts = ?, next_attempt_at = ?, failure_reason = ?
-                where id = ?
+                where id = ? and tenant_id = ?
                 """,
                 attempts,
                 Timestamp.from(clock.instant().plus(delay)),
                 reasonCode(exception),
-                notice.eventId()
+                notice.eventId(),
+                notice.tenantId()
         );
         log.warn(
                 "outbox publish failed eventId={} tenantId={} aggregateId={} attempt={} retryInMs={} error={}",

@@ -99,12 +99,13 @@ public class ReconciliationService {
         }
     }
 
-    public ReconciliationRunResponse approve(UUID id) {
+    public ReconciliationRunResponse approve(UUID id, String tenantId) {
         reads.executeWithoutResult(status -> {
             List<String> current = jdbc.query(
-                    "select status from import_run where id = ? for update",
+                    "select status from import_run where id = ? and tenant_id = ? for update",
                     (rs, row) -> rs.getString("status"),
-                    id
+                    id,
+                    tenantId
             );
             if (current.isEmpty()) {
                 throw new ReconciliationNotFoundException();
@@ -112,14 +113,15 @@ public class ReconciliationService {
             if (!"HALTED".equals(current.get(0))) {
                 throw new ReconciliationConflictException();
             }
-            applySavedDeactivations(id);
+            applySavedDeactivations(id, tenantId);
             jdbc.update(
-                    "update import_run set status = 'APPROVED', finished_at = ? where id = ?",
+                    "update import_run set status = 'APPROVED', finished_at = ? where id = ? and tenant_id = ?",
                     Timestamp.from(clock.instant()),
-                    id
+                    id,
+                    tenantId
             );
         });
-        ReconciliationRunResponse response = get(id);
+        ReconciliationRunResponse response = get(id, tenantId);
         log.info(
                 "reconciliation approved runId={} tenantId={} missingCount={}",
                 response.id(),
@@ -127,10 +129,6 @@ public class ReconciliationService {
                 response.missingCount()
         );
         return response;
-    }
-
-    public ReconciliationRunResponse get(UUID id) {
-        return load(id, null);
     }
 
     public ReconciliationRunResponse get(UUID id, String tenantId) {
@@ -141,17 +139,17 @@ public class ReconciliationService {
     }
 
     private ReconciliationRunResponse load(UUID id, String tenantId) {
-        boolean scoped = tenantId != null;
         List<ReconciliationRunResponse> rows = jdbc.query(
                 """
                         select id, tenant_id, status, unchanged_count, create_count, update_count,
                                deactivate_count, missing_count, active_employee_count, export_row_count,
                                missing_ratio, threshold, halt_reason, rejected_count
                         from import_run
-                        where id = ?
-                        """ + (scoped ? " and tenant_id = ?" : ""),
+                        where id = ? and tenant_id = ?
+                        """,
                 (rs, row) -> mapRun(rs),
-                scoped ? new Object[] {id, tenantId} : new Object[] {id}
+                id,
+                tenantId
         );
         if (rows.isEmpty()) {
             throw new ReconciliationNotFoundException();
@@ -163,6 +161,9 @@ public class ReconciliationService {
         UUID id = insertRun(tenantId);
         try {
             return reconcileClaimed(temp, tenantId, id);
+        } catch (com.moveinsync.hrsync.auth.TenantMismatchException mismatch) {
+            jdbc.update("delete from import_run where id = ? and tenant_id = ?", id, tenantId);
+            throw mismatch;
         } catch (RuntimeException exception) {
             markFailed(id, tenantId, exception);
             throw exception;
@@ -200,9 +201,9 @@ public class ReconciliationService {
                 : classify(temp, tenantId, dirty, bucketCount, heads, unchanged);
         if (exceedsMissingRatio(diff.missing(), activeCount)) {
             saveCandidates(id, tenantId, heads);
-            finish(id, "HALTED", diff, 0, activeCount, scan.rowCount(), HALT_REASON);
+            finish(id, tenantId, "HALTED", diff, 0, activeCount, scan.rowCount(), HALT_REASON);
             meters.counter("reconciliation.halted", "reason", HALT_REASON).increment();
-            ReconciliationRunResponse halted = get(id);
+            ReconciliationRunResponse halted = get(id, tenantId);
             log.warn(
                     "reconciliation halted runId={} tenantId={} missingCount={} activeCount={} ratio={} threshold={} reason={}",
                     halted.id(),
@@ -216,8 +217,8 @@ public class ReconciliationService {
             return halted;
         }
         int deactivated = deactivateMissing(tenantId, heads);
-        finish(id, "COMPLETED", diff, deactivated, activeCount, scan.rowCount(), null);
-        ReconciliationRunResponse response = get(id);
+        finish(id, tenantId, "COMPLETED", diff, deactivated, activeCount, scan.rowCount(), null);
+        ReconciliationRunResponse response = get(id, tenantId);
         log.info(
                 "reconciliation runId={} tenantId={} status={} unchanged={} toCreate={} toUpdate={} toDeactivate={} rejected={} missingCount={} activeCount={} exportRowCount={}",
                 response.id(),
@@ -240,10 +241,11 @@ public class ReconciliationService {
                 """
                         update import_run
                         set status = 'FAILED', finished_at = ?
-                        where id = ? and status = 'RUNNING'
+                        where id = ? and tenant_id = ? and status = 'RUNNING'
                         """,
                 Timestamp.from(clock.instant()),
-                id
+                id,
+                tenantId
         );
         log.warn(
                 "reconciliation failed runId={} tenantId={} error={}",
@@ -342,12 +344,7 @@ public class ReconciliationService {
         }
     }
 
-    private void applySavedDeactivations(UUID runId) {
-        String tenantId = jdbc.queryForObject(
-                "select tenant_id from import_run where id = ?",
-                String.class,
-                runId
-        );
+    private void applySavedDeactivations(UUID runId, String tenantId) {
         jdbc.query(connection -> {
             PreparedStatement statement = connection.prepareStatement(
                     "select employee_id, hr_version from import_run_deactivation where tenant_id = ? and run_id = ?"
@@ -407,9 +404,7 @@ public class ReconciliationService {
             try (InputStream input = Files.newInputStream(temp)) {
                 ExportCsv.parse(input, row -> {
                     if (!tenantId.equals(row.tenantId())) {
-                        throw new ReconciliationException(
-                                "Reconciliation export contains a row for a different tenant"
-                        );
+                        throw new com.moveinsync.hrsync.auth.TenantMismatchException();
                     }
                     buckets[RosterHash.bucket(row.employeeId(), buckets.length)].add(hash(row));
                     rows[0]++;
@@ -543,6 +538,7 @@ public class ReconciliationService {
 
     private void finish(
             UUID id,
+            String tenantId,
             String status,
             Diff diff,
             int deactivated,
@@ -571,7 +567,7 @@ public class ReconciliationService {
                             missing_ratio = ?,
                             threshold = ?,
                             halt_reason = ?
-                        where id = ?
+                        where id = ? and tenant_id = ?
                         """,
                 status,
                 Timestamp.from(clock.instant()),
@@ -586,7 +582,8 @@ public class ReconciliationService {
                 ratio,
                 threshold,
                 haltReason,
-                id
+                id,
+                tenantId
         );
     }
 
@@ -608,7 +605,7 @@ public class ReconciliationService {
 
     private ReconciliationRunResponse mapRun(ResultSet rs) throws SQLException {
         UUID id = rs.getObject("id", UUID.class);
-        List<Rejection> rejections = rejections(id);
+        List<Rejection> rejections = rejections(id, rs.getString("tenant_id"));
         return new ReconciliationRunResponse(
                 id,
                 rs.getString("tenant_id"),
@@ -629,16 +626,18 @@ public class ReconciliationService {
         );
     }
 
-    private List<Rejection> rejections(UUID id) {
+    private List<Rejection> rejections(UUID id, String tenantId) {
         return jdbc.query(
                 """
-                        select employee_id, reason
-                        from import_run_rejection
-                        where run_id = ?
-                        order by employee_id
+                        select rejection.employee_id, rejection.reason
+                        from import_run_rejection rejection
+                        join import_run run on run.id = rejection.run_id
+                        where rejection.run_id = ? and run.tenant_id = ?
+                        order by rejection.employee_id
                         """,
                 (rs, row) -> new Rejection(rs.getString("employee_id"), rs.getString("reason")),
-                id
+                id,
+                tenantId
         );
     }
 

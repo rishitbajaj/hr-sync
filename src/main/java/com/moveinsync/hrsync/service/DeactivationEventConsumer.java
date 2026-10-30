@@ -47,7 +47,7 @@ public class DeactivationEventConsumer {
         if (notice == null || !OutboxEvents.EMPLOYEE_DEACTIVATED.equals(notice.eventType())) {
             return;
         }
-        if (alreadyHandled(notice.eventId())) {
+        if (alreadyHandled(notice.eventId(), notice.tenantId())) {
             return;
         }
         Cancellation cancellation = bookings.cancelFutureBookings(
@@ -81,11 +81,12 @@ public class DeactivationEventConsumer {
         );
     }
 
-    private boolean alreadyHandled(long eventId) {
+    private boolean alreadyHandled(long eventId, String tenantId) {
         Integer count = jdbc.queryForObject(
-                "select count(*) from deactivation_effect where event_id = ?",
+                "select count(*) from deactivation_effect where event_id = ? and tenant_id = ?",
                 Integer.class,
-                eventId
+                eventId,
+                tenantId
         );
         return count != null && count > 0;
     }

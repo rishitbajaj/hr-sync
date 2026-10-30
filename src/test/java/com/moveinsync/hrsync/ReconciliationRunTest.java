@@ -374,7 +374,7 @@ class ReconciliationRunTest {
         JsonNode halted = postCsv(tenant, csv(tenant, exportFirst(tenant, 2)));
         assertThat(halted.get("status").asText()).isEqualTo("HALTED");
         assertThat(halted.get("missingCount").asInt()).isEqualTo(2);
-        String url = "/reconciliation/runs/" + halted.get("id").asText() + "/approve";
+        String url = "/reconciliation/runs/" + halted.get("id").asText() + "/approve?tenantId=" + tenant;
 
         ResponseEntity<String> anonymous = restTemplate.postForEntity(url, null, String.class);
         assertThat(anonymous.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
@@ -524,11 +524,14 @@ class ReconciliationRunTest {
                 other,emp-2,1,Secret Name,secret@leak.example,+15550000001,M1,BLR,DAY
                 """;
         ResponseEntity<String> response = postRaw("acme", csv.getBytes(StandardCharsets.UTF_8));
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(response.getBody()).contains("different tenant");
-        assertThat(response.getBody()).doesNotContain("Secret Name").doesNotContain("secret@leak.example");
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(response.getBody()).doesNotContain("Secret Name").doesNotContain("secret@leak.example").doesNotContain("other");
         assertThat(jdbc.queryForObject(
                 "select count(*) from employee where tenant_id in ('acme', 'other')",
+                Long.class
+        )).isZero();
+        assertThat(jdbc.queryForObject(
+                "select count(*) from import_run where tenant_id in ('acme', 'other')",
                 Long.class
         )).isZero();
     }
@@ -600,17 +603,35 @@ class ReconciliationRunTest {
                 new HttpEntity<>(scopeAdmin),
                 String.class
         );
-        assertThat(otherTenant.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(otherTenant.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
         assertThat(otherTenant.getBody()).doesNotContain("Pat").doesNotContain("Ada").doesNotContain("@example.com");
 
-        ResponseEntity<String> missingTenant = restTemplate.exchange(
+        ResponseEntity<String> ownTenant = restTemplate.exchange(
                 "/reconciliation/runs/" + run.get("id").asText(),
                 HttpMethod.GET,
                 new HttpEntity<>(scopeAdmin),
                 String.class
         );
+        assertThat(ownTenant.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        HttpHeaders operator = operatorHeaders();
+        ResponseEntity<String> namedOther = restTemplate.exchange(
+                "/reconciliation/runs/" + run.get("id").asText() + "?tenantId=other-co",
+                HttpMethod.GET,
+                new HttpEntity<>(operator),
+                String.class
+        );
+        assertThat(namedOther.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(namedOther.getBody()).doesNotContain("Pat").doesNotContain("Ada");
+
+        ResponseEntity<String> missingTenant = restTemplate.exchange(
+                "/reconciliation/runs/" + run.get("id").asText(),
+                HttpMethod.GET,
+                new HttpEntity<>(operator),
+                String.class
+        );
         assertThat(missingTenant.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(missingTenant.getBody()).contains("tenantId is required");
+        assertThat(missingTenant.getBody()).contains("A tenant is required");
         assertThat(missingTenant.getBody()).doesNotContain("Pat").doesNotContain("Ada");
 
         UUID runId = UUID.fromString(run.get("id").asText());
