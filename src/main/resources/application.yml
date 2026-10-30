@@ -28,6 +28,10 @@ server:
     max-swallow-size: -1
 
 management:
+  prometheus:
+    metrics:
+      export:
+        enabled: true
   endpoint:
     prometheus:
       access: unrestricted

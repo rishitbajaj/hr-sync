@@ -37,7 +37,7 @@ sample() {
       >"$OUT/activity-$ts.txt" || true
     curl -sS -m 8 -H "Authorization: Bearer $TOKEN" -H 'Accept: application/openmetrics-text;version=1.0.0;charset=utf-8' \
       http://127.0.0.1:8092/actuator/prometheus -o "$OUT/prom-$ts.txt" || true
-    for metric in jvm.memory.used process.cpu.usage system.cpu.usage hikaricp.connections.active hikaricp.connections.pending hikaricp.connections.max outbox.pending outbox.oldest.pending.seconds outbox.failed outbox.published; do
+    for metric in jvm.memory.used process.cpu.usage system.cpu.usage hikaricp.connections.active hikaricp.connections.pending hikaricp.connections.max outbox.pending outbox.oldest.pending.seconds outbox.failed outbox.published outbox.claim.size outbox.publish.rate; do
       curl -sS -m 8 -H "Authorization: Bearer $TOKEN" \
         "http://127.0.0.1:8092/actuator/metrics/${metric}" -o "$OUT/metric-${metric}-$ts.json" || true
     done

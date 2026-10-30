@@ -4,8 +4,6 @@ import com.moveinsync.hrsync.domain.BatchIngestor;
 import com.moveinsync.hrsync.domain.ChangeStore;
 import com.moveinsync.hrsync.domain.EventValidator;
 import com.moveinsync.hrsync.domain.OfficeDirectory;
-import io.micrometer.prometheusmetrics.PrometheusConfig;
-import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import com.github.benmanes.caffeine.cache.Ticker;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -37,12 +35,6 @@ public class SyncConfig {
     @ConditionalOnMissingBean
     public Ticker cacheTicker() {
         return Ticker.systemTicker();
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public PrometheusMeterRegistry prometheusMeterRegistry() {
-        return new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
     }
 
     @Bean
