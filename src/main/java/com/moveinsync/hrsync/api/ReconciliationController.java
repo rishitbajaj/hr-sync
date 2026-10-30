@@ -29,8 +29,11 @@ public class ReconciliationController {
     }
 
     @GetMapping("/reconciliation/runs/{id}")
-    public ReconciliationRunResponse get(@PathVariable UUID id) {
-        return reconciliation.get(id);
+    public ReconciliationRunResponse get(
+            @PathVariable UUID id,
+            @RequestParam(name = "tenantId", required = false) String tenantId
+    ) {
+        return reconciliation.get(id, tenantId);
     }
 
     @PostMapping("/reconciliation/runs/{id}/approve")

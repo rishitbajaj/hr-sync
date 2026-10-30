@@ -130,6 +130,18 @@ public class ReconciliationService {
     }
 
     public ReconciliationRunResponse get(UUID id) {
+        return load(id, null);
+    }
+
+    public ReconciliationRunResponse get(UUID id, String tenantId) {
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new ReconciliationException("tenantId is required");
+        }
+        return load(id, tenantId);
+    }
+
+    private ReconciliationRunResponse load(UUID id, String tenantId) {
+        boolean scoped = tenantId != null;
         List<ReconciliationRunResponse> rows = jdbc.query(
                 """
                         select id, tenant_id, status, unchanged_count, create_count, update_count,
@@ -137,9 +149,9 @@ public class ReconciliationService {
                                missing_ratio, threshold, halt_reason, rejected_count
                         from import_run
                         where id = ?
-                        """,
+                        """ + (scoped ? " and tenant_id = ?" : ""),
                 (rs, row) -> mapRun(rs),
-                id
+                scoped ? new Object[] {id, tenantId} : new Object[] {id}
         );
         if (rows.isEmpty()) {
             throw new ReconciliationNotFoundException();
@@ -187,7 +199,7 @@ public class ReconciliationService {
                 ? new Diff(unchanged, 0, 0, 0, List.of())
                 : classify(temp, tenantId, dirty, bucketCount, heads, unchanged);
         if (exceedsMissingRatio(diff.missing(), activeCount)) {
-            saveCandidates(id, heads);
+            saveCandidates(id, tenantId, heads);
             finish(id, "HALTED", diff, 0, activeCount, scan.rowCount(), HALT_REASON);
             meters.counter("reconciliation.halted", "reason", HALT_REASON).increment();
             ReconciliationRunResponse halted = get(id);
@@ -297,7 +309,7 @@ public class ReconciliationService {
         }
     }
 
-    private void saveCandidates(UUID runId, Map<String, Head> heads) {
+    private void saveCandidates(UUID runId, String tenantId, Map<String, Head> heads) {
         List<Head> missing = new ArrayList<>();
         for (Head head : heads.values()) {
             if (!head.seen) {
@@ -306,8 +318,8 @@ public class ReconciliationService {
         }
         int batch = 500;
         String sql = """
-                insert into import_run_deactivation (run_id, employee_id, hr_version)
-                values (?, ?, ?)
+                insert into import_run_deactivation (tenant_id, run_id, employee_id, hr_version)
+                values (?, ?, ?, ?)
                 """;
         for (int start = 0; start < missing.size(); start += batch) {
             int offset = start;
@@ -316,9 +328,10 @@ public class ReconciliationService {
                 @Override
                 public void setValues(PreparedStatement statement, int index) throws SQLException {
                     Head head = missing.get(offset + index);
-                    statement.setObject(1, runId);
-                    statement.setString(2, head.employeeId);
-                    statement.setLong(3, head.hrVersion);
+                    statement.setString(1, tenantId);
+                    statement.setObject(2, runId);
+                    statement.setString(3, head.employeeId);
+                    statement.setLong(4, head.hrVersion);
                 }
 
                 @Override
@@ -337,10 +350,11 @@ public class ReconciliationService {
         );
         jdbc.query(connection -> {
             PreparedStatement statement = connection.prepareStatement(
-                    "select employee_id, hr_version from import_run_deactivation where run_id = ?"
+                    "select employee_id, hr_version from import_run_deactivation where tenant_id = ? and run_id = ?"
             );
             statement.setFetchSize(500);
-            statement.setObject(1, runId);
+            statement.setString(1, tenantId);
+            statement.setObject(2, runId);
             return statement;
         }, (ResultSetExtractor<Void>) rs -> {
             while (rs.next()) {

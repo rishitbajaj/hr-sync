@@ -125,7 +125,7 @@ class ReconciliationRunTest {
         assertThat(outboxCount(tenant)).isEqualTo(outboxBefore);
         assertThat(status(tenant, "emp-ghost")).isEqualTo("PLACEHOLDER");
 
-        JsonNode fetched = getRun(run.get("id").asText());
+        JsonNode fetched = getRun(tenant, run.get("id").asText());
         assertThat(fetched.get("unchanged").asInt()).isEqualTo(3);
         assertThat(fetched.get("missingCount").asInt()).isZero();
     }
@@ -310,7 +310,7 @@ class ReconciliationRunTest {
         assertThat(output.getOut()).contains("reason=MISSING_RATIO_EXCEEDED").contains("missingCount=80000");
         assertThat(output.getOut()).doesNotContain("Pat").doesNotContain("@example.com");
 
-        JsonNode fetched = getRun(run.get("id").asText());
+        JsonNode fetched = getRun(tenant, run.get("id").asText());
         assertThat(fetched.get("missingCount").asInt()).isEqualTo(80_000);
         assertThat(fetched.get("status").asText()).isEqualTo("HALTED");
     }
@@ -477,7 +477,7 @@ class ReconciliationRunTest {
 
         interruptedRuns.markInterrupted();
 
-        JsonNode failed = getRun(id.toString());
+        JsonNode failed = getRun(tenant, id.toString());
         assertThat(failed.get("status").asText()).isEqualTo("FAILED");
         assertThat(failed.get("haltReason").asText()).isEqualTo("INTERRUPTED");
         JsonNode again = postCsv(tenant, csv(tenant, stored(tenant)));
@@ -571,8 +571,55 @@ class ReconciliationRunTest {
         return postCsv(tenant, csv.getBytes(StandardCharsets.UTF_8));
     }
 
-    private JsonNode getRun(String id) throws Exception {
-        ResponseEntity<String> response = restTemplate.getForEntity("/reconciliation/runs/" + id, String.class);
+    @Test
+    void aRunIsVisibleOnlyForItsTenant() throws Exception {
+        String tenant = "recon-scope";
+        saveOffice(tenant);
+        create(tenant, "emp-1", 1, "Pat");
+        create(tenant, "emp-2", 1, "Ada");
+
+        JsonNode run = postCsv(tenant, csv(tenant, List.of(find(tenant, "emp-1"))));
+        assertThat(run.get("status").asText()).isEqualTo("HALTED");
+
+        JsonNode fetched = getRun(tenant, run.get("id").asText());
+        assertThat(fetched.get("tenantId").asText()).isEqualTo(tenant);
+        assertThat(fetched.get("status").asText()).isEqualTo("HALTED");
+
+        ResponseEntity<String> otherTenant = restTemplate.getForEntity(
+                "/reconciliation/runs/" + run.get("id").asText() + "?tenantId=other-co",
+                String.class
+        );
+        assertThat(otherTenant.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(otherTenant.getBody()).doesNotContain("Pat").doesNotContain("Ada").doesNotContain("@example.com");
+
+        ResponseEntity<String> missingTenant = restTemplate.getForEntity(
+                "/reconciliation/runs/" + run.get("id").asText(),
+                String.class
+        );
+        assertThat(missingTenant.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(missingTenant.getBody()).contains("tenantId is required");
+        assertThat(missingTenant.getBody()).doesNotContain("Pat").doesNotContain("Ada");
+
+        UUID runId = UUID.fromString(run.get("id").asText());
+        assertThat(jdbc.queryForObject(
+                "select count(*) from import_run_deactivation where run_id = ? and tenant_id = ?",
+                Long.class,
+                runId,
+                tenant
+        )).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "select employee_id from import_run_deactivation where tenant_id = ? and run_id = ?",
+                String.class,
+                tenant,
+                runId
+        )).isEqualTo("emp-2");
+    }
+
+    private JsonNode getRun(String tenant, String id) throws Exception {
+        ResponseEntity<String> response = restTemplate.getForEntity(
+                "/reconciliation/runs/" + id + "?tenantId=" + tenant,
+                String.class
+        );
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).doesNotContain("@example.com", "Nola", "Gate 9");
         return objectMapper.readTree(response.getBody());
