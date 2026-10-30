@@ -42,7 +42,7 @@ An update or deactivate for an employee that has no row yet still records the ve
 - An HR deactivate inserts status `DEACTIVATED`, `hr_version` set to the event version, and null HR and transport fields. Deactivate does not copy HR fields onto the row.
 - A transport-admin change for an unknown employee inserts the transport fields, `transport_version` set to the event version, `hr_version` 0, and status `PLACEHOLDER`.
 
-`PLACEHOLDER` is not an active employee. Active counts use `status = 'ACTIVE'` (the partial index `idx_employee_tenant_active` already does). A normal read, `findVisibleByTenantIdAndEmployeeId`, does not return a `PLACEHOLDER`. The apply path still loads the row so a later event can see its version.
+`PLACEHOLDER` is not an active employee. Active counts use `status = 'ACTIVE'` (the partial index `idx_employee_tenant_active` already does). A normal read, `findVisibleByTenantIdAndEmployeeId`, does not return a `PLACEHOLDER`. The apply path still loads the row so a later event can see its version. Writing a `PLACEHOLDER` records `processed_event` and does not write an outbox row. The create that turns that row `ACTIVE` is the first outbox row.
 
 A later create whose version is less than or equal to the stored `hr_version` is `STALE_IGNORED`. The first create with a higher version applies the HR fields and sets status `ACTIVE`, including when the row was `PLACEHOLDER` or `DEACTIVATED`. Transport fields already stored on a placeholder are kept.
 

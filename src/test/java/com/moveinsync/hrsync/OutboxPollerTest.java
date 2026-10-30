@@ -393,6 +393,32 @@ class OutboxPollerTest {
     }
 
     @Test
+    void placeholderCreationEmitsNoEventUntilActivation() {
+        assertThat(apply(rename("emp-hold", 5, "Later")).outcome()).isEqualTo(Outcome.APPLIED);
+        assertThat(apply(rename("emp-hold", 6, "Later Still")).outcome()).isEqualTo(Outcome.APPLIED);
+        assertThat(employeeStatus("emp-hold")).isEqualTo("PLACEHOLDER");
+        assertThat(outboxCount("emp-hold")).isZero();
+        assertThat(count("processed_event", "emp-hold")).isEqualTo(2);
+
+        assertThat(apply(create("emp-hold", 3, "Early")).reasonCode()).isEqualTo(ReasonCode.STALE_IGNORED);
+        assertThat(outboxCount("emp-hold")).isZero();
+
+        assertThat(apply(create("emp-hold", 8, "Real")).outcome()).isEqualTo(Outcome.APPLIED);
+        assertThat(employeeStatus("emp-hold")).isEqualTo("ACTIVE");
+        assertThat(outboxCount("emp-hold")).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "select event_type from outbox where aggregate_id = ?",
+                String.class,
+                "emp-hold"
+        )).isEqualTo("CREATE");
+        assertThat(jdbc.queryForObject(
+                "select payload::text from outbox where aggregate_id = ?",
+                String.class,
+                "emp-hold"
+        )).contains("status");
+    }
+
+    @Test
     void outboxPayloadOmitsPersonalValues() {
         apply(new SyncEvent(
                 SampleHrBatch.TENANT,
@@ -508,6 +534,15 @@ class OutboxPollerTest {
                 employeeId
         );
         return count == null ? 0 : count;
+    }
+
+    private String employeeStatus(String employeeId) {
+        return jdbc.queryForObject(
+                "select status from employee where tenant_id = ? and employee_id = ?",
+                String.class,
+                SampleHrBatch.TENANT,
+                employeeId
+        );
     }
 
     private String outboxStatus(String employeeId) {

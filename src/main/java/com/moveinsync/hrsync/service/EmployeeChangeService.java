@@ -133,7 +133,9 @@ public class EmployeeChangeService implements ChangeStore {
             }
         }
         insertProcessed(command);
-        insertOutbox(command, current, next);
+        if (next.status() != EmployeeStatus.PLACEHOLDER) {
+            insertOutbox(command, current, next);
+        }
         persistGate.afterPersist();
         return IngestResult.applied(command.tenantId(), command.employeeId(), command.version());
     }
