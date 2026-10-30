@@ -217,7 +217,7 @@ class ReconciliationRunTest {
         String payload = jdbc.queryForObject(
                 """
                         select payload::text from outbox
-                        where tenant_id = ? and aggregate_id = ? and event_type = 'DEACTIVATE'
+                        where tenant_id = ? and aggregate_id = ? and event_type = 'EMPLOYEE_DEACTIVATED'
                         """,
                 String.class,
                 tenant,
@@ -273,7 +273,7 @@ class ReconciliationRunTest {
         Long deactivations = jdbc.queryForObject(
                 """
                         select count(*) from outbox
-                        where tenant_id = ? and aggregate_id = ? and event_type = 'DEACTIVATE'
+                        where tenant_id = ? and aggregate_id = ? and event_type = 'EMPLOYEE_DEACTIVATED'
                         """,
                 Long.class,
                 tenant,
@@ -456,7 +456,7 @@ class ReconciliationRunTest {
                 tenant
         )).isEqualTo(1);
         assertThat(jdbc.queryForObject(
-                "select count(*) from outbox where tenant_id = ? and event_type = 'DEACTIVATE'",
+                "select count(*) from outbox where tenant_id = ? and event_type = 'EMPLOYEE_DEACTIVATED'",
                 Long.class,
                 tenant
         )).isEqualTo(1);

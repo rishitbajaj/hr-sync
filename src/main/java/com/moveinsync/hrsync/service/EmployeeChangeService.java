@@ -9,6 +9,7 @@ import com.moveinsync.hrsync.domain.Decision;
 import com.moveinsync.hrsync.domain.EmployeeChangeApplier;
 import com.moveinsync.hrsync.domain.EmployeeStatus;
 import com.moveinsync.hrsync.domain.EventType;
+import com.moveinsync.hrsync.domain.OutboxEvents;
 import com.moveinsync.hrsync.domain.FieldChannel;
 import com.moveinsync.hrsync.domain.HrEmployee;
 import com.moveinsync.hrsync.domain.IngestResult;
@@ -249,7 +250,7 @@ public class EmployeeChangeService implements ChangeStore {
                 INSERT_OUTBOX,
                 tenantId,
                 employeeId,
-                EventType.DEACTIVATE.name(),
+                OutboxEvents.EMPLOYEE_DEACTIVATED,
                 json,
                 now,
                 now
@@ -257,6 +258,10 @@ public class EmployeeChangeService implements ChangeStore {
     }
 
     private void insertOutbox(ChangeCommand command, HrEmployee before, HrEmployee after) {
+        if (command.type() == EventType.DEACTIVATE) {
+            insertDeactivateNotice(command.tenantId(), command.employeeId());
+            return;
+        }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("employeeId", command.employeeId());
         payload.put("changedFields", ChangedFields.between(before, after, command.channel()));
