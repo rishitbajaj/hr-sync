@@ -46,7 +46,8 @@ public class DeactivationEventConsumer {
         Cancellation cancellation = bookings.cancelFutureBookings(
                 notice.tenantId(),
                 notice.aggregateId(),
-                clock.instant()
+                notice.createdAt(),
+                notice.eventId()
         );
         jdbc.update(
                 """

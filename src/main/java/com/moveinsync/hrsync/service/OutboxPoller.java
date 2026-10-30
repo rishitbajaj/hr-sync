@@ -27,7 +27,8 @@ public class OutboxPoller {
     private static final Logger log = LoggerFactory.getLogger(OutboxPoller.class);
 
     private static final String CLAIM = """
-            select o.id, o.tenant_id, o.aggregate_id, o.event_type, o.payload::text as payload, o.attempts
+            select o.id, o.tenant_id, o.aggregate_id, o.event_type, o.payload::text as payload, o.attempts,
+                   o.created_at
             from outbox o
             where o.status = 'PENDING'
               and o.next_attempt_at <= ?
@@ -201,7 +202,8 @@ public class OutboxPoller {
                     rs.getString("tenant_id"),
                     rs.getString("aggregate_id"),
                     rs.getString("event_type"),
-                    changedFields
+                    changedFields,
+                    rs.getTimestamp("created_at").toInstant()
             );
         } catch (Exception exception) {
             throw new SQLException("Unreadable outbox payload for id " + rs.getLong("id"), exception);

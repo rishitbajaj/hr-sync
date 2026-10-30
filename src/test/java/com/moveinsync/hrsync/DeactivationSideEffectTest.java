@@ -105,12 +105,12 @@ class DeactivationSideEffectTest {
         String tenant = "cab-future";
         hire(tenant, "emp-1", "Ada");
         Instant now = clock.instant();
-        bookings.seedTrip("trip-1", 3);
-        bookings.seedBooking("past", tenant, "emp-1", "trip-1", now.minus(Duration.ofDays(2)), now.minus(Duration.ofDays(1)));
-        bookings.seedBooking("riding", tenant, "emp-1", "trip-1", now.minus(Duration.ofHours(1)), now.plus(Duration.ofHours(1)));
-        bookings.seedBooking("later", tenant, "emp-1", "trip-1", now.plus(Duration.ofDays(1)), now.plus(Duration.ofDays(1)).plus(Duration.ofHours(1)));
-        bookings.seedTrip("trip-other", 1);
-        bookings.seedBooking("other", tenant, "emp-2", "trip-other", now.plus(Duration.ofDays(1)), now.plus(Duration.ofDays(2)));
+        bookings.seedTrip(tenant, "trip-1", 3);
+        bookings.seedBooking("past", tenant, "emp-1", "trip-1", now.minus(Duration.ofDays(2)));
+        bookings.seedBooking("riding", tenant, "emp-1", "trip-1", now.minus(Duration.ofHours(1)));
+        bookings.seedBooking("later", tenant, "emp-1", "trip-1", now.plus(Duration.ofDays(1)));
+        bookings.seedTrip(tenant, "trip-other", 1);
+        bookings.seedBooking("other", tenant, "emp-2", "trip-other", now.plus(Duration.ofDays(1)));
 
         assertThat(deactivate(tenant, "emp-1", 2).outcome()).isEqualTo(Outcome.APPLIED);
         assertThat(poller.poll()).isEqualTo(1);
@@ -128,9 +128,9 @@ class DeactivationSideEffectTest {
         String tenant = "cab-seats";
         hire(tenant, "emp-1", "Ada");
         Instant start = clock.instant().plus(Duration.ofDays(1));
-        bookings.seedTrip("trip-1", 2);
-        bookings.seedBooking("a", tenant, "emp-1", "trip-1", start, start.plus(Duration.ofHours(1)));
-        bookings.seedBooking("b", tenant, "emp-1", "trip-1", start.plus(Duration.ofHours(2)), start.plus(Duration.ofHours(3)));
+        bookings.seedTrip(tenant, "trip-1", 2);
+        bookings.seedBooking("a", tenant, "emp-1", "trip-1", start);
+        bookings.seedBooking("b", tenant, "emp-1", "trip-1", start.plus(Duration.ofHours(2)));
 
         deactivate(tenant, "emp-1", 2);
         assertThat(poller.poll()).isEqualTo(1);
@@ -147,8 +147,8 @@ class DeactivationSideEffectTest {
         String tenant = "cab-once";
         hire(tenant, "emp-1", "Ada");
         Instant start = clock.instant().plus(Duration.ofDays(1));
-        bookings.seedTrip("trip-1", 1);
-        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start, start.plus(Duration.ofHours(1)));
+        bookings.seedTrip(tenant, "trip-1", 1);
+        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start);
 
         assertThat(deactivate(tenant, "emp-1", 3).outcome()).isEqualTo(Outcome.APPLIED);
         assertThat(deactivate(tenant, "emp-1", 3).reasonCode()).isEqualTo(ReasonCode.DUPLICATE);
@@ -167,8 +167,8 @@ class DeactivationSideEffectTest {
         String tenant = "cab-retry";
         hire(tenant, "emp-1", "Ada");
         Instant start = clock.instant().plus(Duration.ofDays(1));
-        bookings.seedTrip("trip-1", 1);
-        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start, start.plus(Duration.ofHours(1)));
+        bookings.seedTrip(tenant, "trip-1", 1);
+        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start);
         bookings.failNext(2);
         deactivate(tenant, "emp-1", 2);
 
@@ -192,8 +192,8 @@ class DeactivationSideEffectTest {
         String tenant = "cab-down";
         hire(tenant, "emp-stuck", "Ada");
         Instant start = clock.instant().plus(Duration.ofDays(1));
-        bookings.seedTrip("trip-1", 1);
-        bookings.seedBooking("later", tenant, "emp-stuck", "trip-1", start, start.plus(Duration.ofHours(1)));
+        bookings.seedTrip(tenant, "trip-1", 1);
+        bookings.seedBooking("later", tenant, "emp-stuck", "trip-1", start);
         bookings.failNext(Integer.MAX_VALUE);
         deactivate(tenant, "emp-stuck", 2);
 
@@ -226,8 +226,8 @@ class DeactivationSideEffectTest {
         String tenant = "cab-crash";
         hire(tenant, "emp-1", "Ada");
         Instant start = clock.instant().plus(Duration.ofDays(1));
-        bookings.seedTrip("trip-1", 1);
-        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start, start.plus(Duration.ofHours(1)));
+        bookings.seedTrip(tenant, "trip-1", 1);
+        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start);
         deactivate(tenant, "emp-1", 2);
         AtomicInteger crashes = new AtomicInteger();
         publisher.setListener(notice -> {
@@ -255,10 +255,10 @@ class DeactivationSideEffectTest {
         hire(tenant, "emp-1", "Ada");
         hire(tenant, "emp-2", "Bea");
         Instant now = clock.instant();
-        bookings.seedTrip("trip-1", 3);
-        bookings.seedBooking("keep-future", tenant, "emp-1", "trip-1", now.plus(Duration.ofDays(1)), now.plus(Duration.ofDays(2)));
-        bookings.seedBooking("drop-future", tenant, "emp-2", "trip-1", now.plus(Duration.ofDays(1)), now.plus(Duration.ofDays(2)));
-        bookings.seedBooking("drop-past", tenant, "emp-2", "trip-1", now.minus(Duration.ofDays(2)), now.minus(Duration.ofDays(1)));
+        bookings.seedTrip(tenant, "trip-1", 3);
+        bookings.seedBooking("keep-future", tenant, "emp-1", "trip-1", now.plus(Duration.ofDays(1)));
+        bookings.seedBooking("drop-future", tenant, "emp-2", "trip-1", now.plus(Duration.ofDays(1)));
+        bookings.seedBooking("drop-past", tenant, "emp-2", "trip-1", now.minus(Duration.ofDays(2)));
 
         HttpHeaders csvHeaders = new HttpHeaders();
         csvHeaders.setContentType(MediaType.parseMediaType("text/csv"));
@@ -335,8 +335,8 @@ class DeactivationSideEffectTest {
         String tenant = "cab-rehire";
         hire(tenant, "emp-1", "Ada");
         Instant start = clock.instant().plus(Duration.ofDays(1));
-        bookings.seedTrip("trip-1", 1);
-        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start, start.plus(Duration.ofHours(1)));
+        bookings.seedTrip(tenant, "trip-1", 1);
+        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start);
         deactivate(tenant, "emp-1", 2);
         assertThat(poller.poll()).isEqualTo(1);
         assertThat(bookings.isCancelled("later")).isTrue();
@@ -361,14 +361,14 @@ class DeactivationSideEffectTest {
         headers.setContentType(MediaType.APPLICATION_JSON);
         ResponseEntity<String> trip = restTemplate.postForEntity(
                 "/demo/trips",
-                new HttpEntity<>("{\"tripId\":\"trip-demo\",\"capacity\":2}", headers),
+                new HttpEntity<>("{\"tenantId\":\"demo-co\",\"tripId\":\"trip-demo\",\"capacity\":2}", headers),
                 String.class
         );
         assertThat(trip.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(trip.getBody()).contains("trip-demo").doesNotContain(SECRET_NAME);
 
         String booking = """
-                {"bookingId":"b-demo","tenantId":"demo-co","employeeId":"emp-demo","tripId":"trip-demo","startsAt":"2026-11-02T09:00:00Z","endsAt":"2026-11-02T10:00:00Z"}
+                {"bookingId":"b-demo","tenantId":"demo-co","employeeId":"emp-demo","tripId":"trip-demo","startsAt":"2026-11-02T09:00:00Z"}
                 """;
         ResponseEntity<String> seeded = restTemplate.postForEntity(
                 "/demo/bookings",

@@ -6,15 +6,15 @@ The poller claims that row and `DeactivationEventConsumer` runs in the same tran
 
 ## What "future" means
 
-A booking is future when its start is after the time the consumer processes the event. Past bookings have already ended. In-progress bookings have started and have not ended. Both have a start at or before that processing time, so they are left alone.
+A booking is future when its start is after the outbox row's `created_at`. That is the time the deactivation was recorded, and it is the same value on every redelivery. Past bookings have already ended. In-progress bookings have started and have not ended. Both have a start at or before that cutoff, so they are left alone. A start equal to the cutoff is kept.
 
-The clock is the processing time, not the time HR sent the deactivate. A cab that started while the event was waiting is already underway and is not cancelled out from under the rider.
+The cutoff is not the time the consumer happens to run, and it is not the time HR sent the deactivate. A cab that started while the event was waiting is already underway and is not cancelled out from under the rider.
 
 ## Idempotency
 
-`BookingClient.cancelFutureBookings` is a no-op for a booking that is already cancelled or absent. Seats are freed only for a booking that changes from booked to cancelled. The mock keeps a seat count per trip.
+The booking store is JDBC, in schema `booking_svc`, and each cancel commits in its own transaction. The update sets `status = 'CANCELLED'` and `cancelled_by_event_id` only where `status = 'BOOKED'` and `starts_at` is after the cutoff. The booking ids and seats freed are then read back by `cancelled_by_event_id`. A repeat of the same event updates nothing and returns that same result, so seats are not freed twice. Occupancy is the count of `BOOKED` rows on the trip, not a stored counter.
 
-The consumer also inserts `deactivation_effect` keyed by the outbox event id, in the same transaction as that record of the effect. A second delivery of an event whose effect row committed does not call the client again. If the process dies after the in-memory cancel but before the transaction commits, the effect row rolls back and the redelivery calls the client again. The client then frees no further seats.
+The consumer also inserts `deactivation_effect` keyed by the outbox event id, in the consumer's transaction. A second delivery of an event whose effect row committed does not call the client again. If that transaction rolls back after the booking transaction has committed, the redelivery calls the client again and reads the same cancellation back.
 
 ## Failure
 
@@ -35,8 +35,8 @@ Approval calls `deactivateIfUnchanged`, which writes the same `EMPLOYEE_DEACTIVA
 Start with the `demo` profile. These endpoints are not loaded otherwise.
 
 ```
-POST /demo/trips     {"tripId":"trip-1","capacity":4}
-POST /demo/bookings  {"bookingId":"b1","tenantId":"acme","employeeId":"emp-1","tripId":"trip-1","startsAt":"2026-11-02T09:00:00Z","endsAt":"2026-11-02T10:00:00Z"}
+POST /demo/trips     {"tenantId":"acme","tripId":"trip-1","capacity":4}
+POST /demo/bookings  {"bookingId":"b1","tenantId":"acme","employeeId":"emp-1","tripId":"trip-1","startsAt":"2026-11-02T09:00:00Z"}
 GET  /demo/bookings
 ```
 

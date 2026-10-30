@@ -1,5 +1,6 @@
 package com.moveinsync.hrsync.api;
 
+import com.moveinsync.hrsync.booking.JdbcBookingService;
 import com.moveinsync.hrsync.booking.MockBookingService;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
@@ -22,24 +23,23 @@ public class DemoBookingController {
     }
 
     @PostMapping("/demo/trips")
-    public MockBookingService.TripView seedTrip(@RequestBody TripSeed request) {
-        return bookings.seedTrip(request.tripId(), request.capacity());
+    public JdbcBookingService.TripView seedTrip(@RequestBody TripSeed request) {
+        return bookings.seedTrip(request.tenantId(), request.tripId(), request.capacity());
     }
 
     @PostMapping("/demo/bookings")
-    public MockBookingService.BookingView seedBooking(@RequestBody BookingSeed request) {
+    public JdbcBookingService.BookingView seedBooking(@RequestBody BookingSeed request) {
         return bookings.seedBooking(
                 request.bookingId(),
                 request.tenantId(),
                 request.employeeId(),
                 request.tripId(),
-                request.startsAt(),
-                request.endsAt()
+                request.startsAt()
         );
     }
 
     @GetMapping("/demo/bookings")
-    public MockBookingService.Board inspect() {
+    public JdbcBookingService.Board inspect() {
         return bookings.board();
     }
 
@@ -48,7 +48,7 @@ public class DemoBookingController {
         return ResponseEntity.badRequest().body(new ApiError("INVALID_BOOKING", "Invalid booking seed"));
     }
 
-    public record TripSeed(String tripId, int capacity) {
+    public record TripSeed(String tenantId, String tripId, int capacity) {
     }
 
     public record BookingSeed(
@@ -56,8 +56,7 @@ public class DemoBookingController {
             String tenantId,
             String employeeId,
             String tripId,
-            Instant startsAt,
-            Instant endsAt
+            Instant startsAt
     ) {
     }
 }
