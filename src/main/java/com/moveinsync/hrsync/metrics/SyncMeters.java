@@ -85,6 +85,10 @@ public class SyncMeters {
         registry.counter("auth.rejected.tokens").increment();
     }
 
+    public void cacheAccess(String cache, String result) {
+        registry.counter("cache.gets", "cache", cache, "result", result).increment();
+    }
+
     private static String counterName(IngestResult result) {
         if (result.outcome() == Outcome.APPLIED) {
             return "ingest.applied";

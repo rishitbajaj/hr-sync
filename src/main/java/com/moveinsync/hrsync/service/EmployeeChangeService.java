@@ -2,6 +2,7 @@ package com.moveinsync.hrsync.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.moveinsync.hrsync.cache.EmployeeReads;
 import com.moveinsync.hrsync.domain.ChangeCommand;
 import com.moveinsync.hrsync.observability.CorrelationIds;
 import com.moveinsync.hrsync.domain.ChangedFields;
@@ -14,6 +15,7 @@ import com.moveinsync.hrsync.domain.OutboxEvents;
 import com.moveinsync.hrsync.domain.FieldChannel;
 import com.moveinsync.hrsync.domain.HrEmployee;
 import com.moveinsync.hrsync.domain.IngestResult;
+import com.moveinsync.hrsync.domain.Outcome;
 import com.moveinsync.hrsync.domain.ReasonCode;
 import com.moveinsync.hrsync.domain.RecordWork;
 import org.springframework.dao.DataAccessException;
@@ -80,13 +82,15 @@ public class EmployeeChangeService implements ChangeStore {
     private final Clock clock;
     private final ObjectMapper objectMapper;
     private final PersistGate persistGate;
+    private final EmployeeReads employeeReads;
 
     public EmployeeChangeService(
             JdbcTemplate jdbc,
             RecordWork recordWork,
             Clock clock,
             ObjectMapper objectMapper,
-            PersistGate persistGate
+            PersistGate persistGate,
+            EmployeeReads employeeReads
     ) {
         this.applier = new EmployeeChangeApplier(clock);
         this.jdbc = jdbc;
@@ -94,6 +98,7 @@ public class EmployeeChangeService implements ChangeStore {
         this.clock = clock;
         this.objectMapper = objectMapper;
         this.persistGate = persistGate;
+        this.employeeReads = employeeReads;
     }
 
     @Override
@@ -101,7 +106,11 @@ public class EmployeeChangeService implements ChangeStore {
         DataAccessException uniqueViolation = null;
         for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
             try {
-                return recordWork.call(() -> applyOnce(command));
+                IngestResult result = recordWork.call(() -> applyOnce(command));
+                if (result.outcome() == Outcome.APPLIED) {
+                    employeeReads.evict(command.tenantId(), command.employeeId());
+                }
+                return result;
             } catch (DataAccessException exception) {
                 if (!isUniqueViolation(exception)) {
                     throw exception;
@@ -233,7 +242,11 @@ public class EmployeeChangeService implements ChangeStore {
             insertDeactivateNotice(tenantId, employeeId);
             return true;
         });
-        return Boolean.TRUE.equals(deactivated);
+        if (Boolean.TRUE.equals(deactivated)) {
+            employeeReads.evict(tenantId, employeeId);
+            return true;
+        }
+        return false;
     }
 
     private void insertDeactivateNotice(String tenantId, String employeeId) {

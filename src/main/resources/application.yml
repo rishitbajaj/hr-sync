@@ -68,6 +68,11 @@ hr-sync:
     connection-timeout: 3s
     statement-timeout: 3s
     retry-after: 3s
+  cache:
+    office-maximum-size: 10000
+    office-ttl: 60s
+    employee-maximum-size: 10000
+    employee-ttl: 10s
   bootstrap:
     operator-username: ${HR_SYNC_BOOTSTRAP_OPERATOR_USERNAME:}
     operator-password: ${HR_SYNC_BOOTSTRAP_OPERATOR_PASSWORD:}

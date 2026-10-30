@@ -6,6 +6,7 @@ import com.moveinsync.hrsync.domain.EventValidator;
 import com.moveinsync.hrsync.domain.OfficeDirectory;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
+import com.github.benmanes.caffeine.cache.Ticker;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -18,6 +19,7 @@ import java.time.Clock;
         AuthSettings.class,
         BootstrapSettings.class,
         DatabaseSettings.class,
+        CacheSettings.class,
         MetricsSettings.class,
         IngestLimits.class,
         OutboxSettings.class,
@@ -29,6 +31,12 @@ public class SyncConfig {
     @Bean
     public Clock clock() {
         return Clock.systemUTC();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public Ticker cacheTicker() {
+        return Ticker.systemTicker();
     }
 
     @Bean

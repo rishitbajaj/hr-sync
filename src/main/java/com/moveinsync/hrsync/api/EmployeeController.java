@@ -2,8 +2,8 @@ package com.moveinsync.hrsync.api;
 
 import com.moveinsync.hrsync.auth.Callers;
 import com.moveinsync.hrsync.auth.UserRole;
-import com.moveinsync.hrsync.repo.EmployeeEntity;
-import com.moveinsync.hrsync.repo.EmployeeRepository;
+import com.moveinsync.hrsync.cache.CachedEmployee;
+import com.moveinsync.hrsync.cache.EmployeeReads;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -12,9 +12,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class EmployeeController {
 
-    private final EmployeeRepository employees;
+    private final EmployeeReads employees;
 
-    public EmployeeController(EmployeeRepository employees) {
+    public EmployeeController(EmployeeReads employees) {
         this.employees = employees;
     }
 
@@ -28,15 +28,13 @@ public class EmployeeController {
         if (caller.role() == UserRole.EMPLOYEE && !id.equals(caller.employeeId())) {
             throw new EmployeeNotFoundException();
         }
-        EmployeeEntity employee = employees.findVisibleByTenantIdAndEmployeeId(tenant, id)
-                .orElseThrow(EmployeeNotFoundException::new);
-        var roster = employee.toDomain();
+        CachedEmployee employee = employees.get(tenant, id).orElseThrow(EmployeeNotFoundException::new);
         return new EmployeeResponse(
-                roster.tenantId(),
-                roster.employeeId(),
-                employee.getStatus().name(),
-                roster.officeCode(),
-                roster.shift()
+                employee.tenantId(),
+                employee.employeeId(),
+                employee.status(),
+                employee.officeCode(),
+                employee.shift()
         );
     }
 
