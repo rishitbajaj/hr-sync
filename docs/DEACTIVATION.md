@@ -39,6 +39,7 @@ Start with the `demo` profile. These endpoints are not loaded otherwise.
 ```
 POST /demo/trips     {"tenantId":"acme","tripId":"trip-1","capacity":4}
 POST /demo/bookings  {"bookingId":"b1","tenantId":"acme","employeeId":"emp-1","tripId":"trip-1","startsAt":"2026-11-02T09:00:00Z"}
+POST /demo/failures  {"failures":1,"timeouts":0,"lostResponses":0}
 GET  /demo/bookings
 ```
 

@@ -599,6 +599,34 @@ class DeactivationSideEffectTest {
         assertThat(board.getBody()).doesNotContain(SECRET_NAME).doesNotContain(SECRET_EMAIL).doesNotContain(SECRET_PHONE);
     }
 
+    @Test
+    void demoFailureInjectionFailsTheNextCancel() {
+        String tenant = "cab-inject";
+        hire(tenant, "emp-1", "Ada");
+        Instant start = clock.instant().plus(Duration.ofDays(1));
+        bookings.seedTrip(tenant, "trip-1", 1);
+        bookings.seedBooking("later", tenant, "emp-1", "trip-1", start);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<String> armed = restTemplate.postForEntity(
+                "/demo/failures",
+                new HttpEntity<>("{\"failures\":1,\"timeouts\":0,\"lostResponses\":0}", headers),
+                String.class
+        );
+        assertThat(armed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(armed.getBody()).contains("\"failures\":1");
+
+        deactivate(tenant, "emp-1", 2);
+        assertThat(poller.poll()).isZero();
+        assertThat(bookings.isCancelled("later")).isFalse();
+        assertThat(poller.poll()).isEqualTo(1);
+        assertThat(bookings.isCancelled("later")).isTrue();
+        assertThat(bookings.occupied("trip-1")).isZero();
+        assertThat(seatsFreed(tenant, "emp-1")).isEqualTo(1);
+        assertThat(effectRows(tenant, "emp-1")).isEqualTo(1);
+    }
+
     private void hire(String tenant, String employeeId, String name) {
         saveOffice(tenant);
         assertThat(syncEvents.ingest(java.util.List.of(new SyncEvent(

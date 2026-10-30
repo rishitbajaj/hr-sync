@@ -43,9 +43,23 @@ public class DemoBookingController {
         return bookings.board();
     }
 
+    @PostMapping("/demo/failures")
+    public FailureInjection failures(@RequestBody FailureInjection request) {
+        int failures = request == null || request.failures() == null ? 0 : request.failures();
+        int timeouts = request == null || request.timeouts() == null ? 0 : request.timeouts();
+        int lostResponses = request == null || request.lostResponses() == null ? 0 : request.lostResponses();
+        bookings.failNext(failures);
+        bookings.timeoutNext(timeouts);
+        bookings.loseResponseNext(lostResponses);
+        return new FailureInjection(failures, timeouts, lostResponses);
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiError> invalid(IllegalArgumentException exception) {
         return ResponseEntity.badRequest().body(new ApiError("INVALID_BOOKING", "Invalid booking seed"));
+    }
+
+    public record FailureInjection(Integer failures, Integer timeouts, Integer lostResponses) {
     }
 
     public record TripSeed(String tenantId, String tripId, int capacity) {
