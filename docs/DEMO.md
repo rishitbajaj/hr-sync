@@ -151,7 +151,7 @@ The booking is created with `"cancelled":false`. After the deactivate is publish
 {"trips":[{"tenantId":"demo-co","tripId":"trip-walk","capacity":4,"occupied":0}],"bookings":[{"bookingId":"book-walk","tenantId":"demo-co","employeeId":"walk-book","tripId":"trip-walk","startsAt":"2026-12-01T09:00:00Z","cancelled":true}]}
 ```
 
-The poller interval is one second. On this run the cancelled board was the next read.
+The poller interval is one second. On the earlier walkthrough the cancelled board was the next read. A later fresh clone of the same procedure returned `"cancelled":false` on the immediate `GET` and `"cancelled":true` two seconds later.
 
 ## 9. Kill mid-operation
 

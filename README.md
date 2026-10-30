@@ -127,7 +127,7 @@ curl -sS -X POST http://localhost:8080/sync/events \
 curl -sS http://localhost:8080/demo/bookings
 ```
 
-The booking's `cancelled` is true after the outbox row is published. `POST /demo/failures` with `{"failures":1}` makes the next cancel throw. That outbox row stays pending, then `FAILED` after 5 attempts, and blocks later events for that employee. `GET /outbox/failed?tenantId=$TENANT` with the operator token lists `employeeId`, `eventId`, `attempts`, and `reasonCode`. `POST /outbox/{eventId}/replay?tenantId=$TENANT` sets it back to pending.
+The booking's `cancelled` is true after the outbox row is published. On a fresh stack the `GET` in the block above still returned `"cancelled":false` in the same second as the deactivate, then `"cancelled":true` on a read two seconds later. Read the board again after the one-second interval before treating a false value as a failure. `POST /demo/failures` with `{"failures":1}` makes the next cancel throw. That outbox row stays pending, then `FAILED` after 5 attempts, and blocks later events for that employee. `GET /outbox/failed?tenantId=$TENANT` with the operator token lists `employeeId`, `eventId`, `attempts`, and `reasonCode`. `POST /outbox/{eventId}/replay?tenantId=$TENANT` sets it back to pending.
 
 `GET /actuator/prometheus` with the operator token and `Accept: text/plain` returns the scrape. An admin receives 403.
 
@@ -369,7 +369,7 @@ A rerun of that kill command after the invariant change exited 0. Of 110,600 eve
 
 ## Verification
 
-`mvn -B test` on 2026-10-30: 191 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2441 peakHeapBytes=85606984 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-30, from a fresh clone of `d3d29e0`: 191 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=1895 peakHeapBytes=85538256 maxHeapBytes=268435456`.
 
 ## Known limitations
 
