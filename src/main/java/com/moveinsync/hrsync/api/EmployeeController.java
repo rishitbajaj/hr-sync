@@ -4,8 +4,6 @@ import com.moveinsync.hrsync.auth.Callers;
 import com.moveinsync.hrsync.auth.UserRole;
 import com.moveinsync.hrsync.repo.EmployeeEntity;
 import com.moveinsync.hrsync.repo.EmployeeRepository;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -40,11 +38,6 @@ public class EmployeeController {
                 roster.officeCode(),
                 roster.shift()
         );
-    }
-
-    @ExceptionHandler(EmployeeNotFoundException.class)
-    public ResponseEntity<ApiError> missing() {
-        return ResponseEntity.status(404).body(new ApiError("NOT_FOUND", "Employee not found"));
     }
 
     public record EmployeeResponse(

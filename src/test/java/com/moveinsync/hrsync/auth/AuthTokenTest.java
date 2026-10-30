@@ -98,7 +98,7 @@ class AuthTokenTest {
             assertThat(locked.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
             JsonNode wrongBody = objectMapper.readTree(wrong.getBody());
             JsonNode lockedBody = objectMapper.readTree(locked.getBody());
-            assertThat(lockedBody.get("error")).isEqualTo(wrongBody.get("error"));
+            assertThat(lockedBody.get("code")).isEqualTo(wrongBody.get("code"));
             assertThat(lockedBody.get("message").asText()).isEqualTo("Invalid username or password");
             assertThat(lockedBody.get("message")).isEqualTo(wrongBody.get("message"));
             assertThat(wrongBody.get("correlationId").asText()).isNotBlank();

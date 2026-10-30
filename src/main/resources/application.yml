@@ -21,6 +21,8 @@ server:
   error:
     include-message: never
     include-binding-errors: never
+    include-stacktrace: never
+    include-exception: false
   tomcat:
     max-http-form-post-size: -1
     max-swallow-size: -1
@@ -62,6 +64,10 @@ hr-sync:
     login-lockout: 15m
   metrics:
     sample-interval: 10s
+  database:
+    connection-timeout: 3s
+    statement-timeout: 3s
+    retry-after: 3s
   bootstrap:
     operator-username: ${HR_SYNC_BOOTSTRAP_OPERATOR_USERNAME:}
     operator-password: ${HR_SYNC_BOOTSTRAP_OPERATOR_PASSWORD:}

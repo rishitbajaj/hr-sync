@@ -17,6 +17,7 @@ import java.time.Clock;
 @EnableConfigurationProperties({
         AuthSettings.class,
         BootstrapSettings.class,
+        DatabaseSettings.class,
         MetricsSettings.class,
         IngestLimits.class,
         OutboxSettings.class,

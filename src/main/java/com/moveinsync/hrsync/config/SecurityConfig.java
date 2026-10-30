@@ -1,10 +1,12 @@
 package com.moveinsync.hrsync.config;
 
+import com.moveinsync.hrsync.api.ApiError;
 import com.moveinsync.hrsync.auth.JwtAuthenticationFilter;
 import com.moveinsync.hrsync.auth.JwtService;
 import com.moveinsync.hrsync.metrics.SyncMeters;
-import com.moveinsync.hrsync.observability.CorrelationIds;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
@@ -25,7 +27,8 @@ public class SecurityConfig {
     static final String FORBIDDEN = "Forbidden";
 
     @Bean
-    SecurityFilterChain security(HttpSecurity http, JwtService tokens, SyncMeters meters) throws Exception {
+    SecurityFilterChain security(HttpSecurity http, JwtService tokens, SyncMeters meters, MappedRoutes routes)
+            throws Exception {
         return http
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -42,13 +45,22 @@ public class SecurityConfig {
                             case EMPLOYEE_ADMIN_OR_OPERATOR -> authorized.hasAnyRole("EMPLOYEE", "ADMIN", "OPERATOR");
                         }
                     }
-                    auth.anyRequest().denyAll();
+                    auth.anyRequest().access((authentication, context) -> {
+                        HttpServletRequest request = context.getRequest();
+                        switch (routes.classify(request)) {
+                            case OTHER_METHOD -> request.setAttribute(MappedRoutes.METHOD_NOT_ALLOWED, Boolean.TRUE);
+                            case NONE -> request.setAttribute(MappedRoutes.UNKNOWN, Boolean.TRUE);
+                            case METHOD -> {
+                            }
+                        }
+                        return new AuthorizationDecision(false);
+                    });
                 })
                 .exceptionHandling(errors -> errors
                         .authenticationEntryPoint((request, response, exception) ->
-                                write(response, 401, "UNAUTHORIZED", UNAUTHORIZED))
+                                deny(request, response, 401, "UNAUTHORIZED", UNAUTHORIZED))
                         .accessDeniedHandler((request, response, exception) ->
-                                write(response, 403, "FORBIDDEN", FORBIDDEN)))
+                                deny(request, response, 403, "FORBIDDEN", FORBIDDEN)))
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .addFilterBefore(new JwtAuthenticationFilter(tokens, meters), UsernamePasswordAuthenticationFilter.class)
                 .build();
@@ -59,18 +71,28 @@ public class SecurityConfig {
         return new BCryptPasswordEncoder();
     }
 
+    private static void deny(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            int status,
+            String code,
+            String message
+    ) throws java.io.IOException {
+        if (Boolean.TRUE.equals(request.getAttribute(MappedRoutes.UNKNOWN))) {
+            write(response, 404, "NOT_FOUND", "Not found");
+            return;
+        }
+        if (Boolean.TRUE.equals(request.getAttribute(MappedRoutes.METHOD_NOT_ALLOWED))) {
+            write(response, 405, "METHOD_NOT_ALLOWED", "Method not allowed");
+            return;
+        }
+        write(response, status, code, message);
+    }
+
     private static void write(HttpServletResponse response, int status, String code, String message) throws java.io.IOException {
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        response.getWriter().write(body(code, message));
-    }
-
-    private static String body(String code, String message) {
-        String correlationId = CorrelationIds.current();
-        if (correlationId == null) {
-            return "{\"error\":\"" + code + "\",\"message\":\"" + message + "\"}";
-        }
-        return "{\"error\":\"" + code + "\",\"message\":\"" + message + "\",\"correlationId\":\"" + correlationId + "\"}";
+        response.getWriter().write(ApiError.json(code, message));
     }
 }

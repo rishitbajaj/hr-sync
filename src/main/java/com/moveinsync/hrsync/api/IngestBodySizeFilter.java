@@ -17,7 +17,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE)
+@Order(Ordered.HIGHEST_PRECEDENCE + 1)
 public class IngestBodySizeFilter extends OncePerRequestFilter {
 
     private final IngestLimits limits;
@@ -52,12 +52,7 @@ public class IngestBodySizeFilter extends OncePerRequestFilter {
         response.setStatus(413);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         String message = "Request body exceeds the maximum of " + limits.getMaxBodyBytes() + " bytes";
-        String correlationId = com.moveinsync.hrsync.observability.CorrelationIds.current();
-        String body = correlationId == null
-                ? "{\"error\":\"REQUEST_TOO_LARGE\",\"message\":\"" + message + "\"}"
-                : "{\"error\":\"REQUEST_TOO_LARGE\",\"message\":\"" + message + "\",\"correlationId\":\""
-                + correlationId + "\"}";
-        response.getWriter().write(body);
+        response.getWriter().write(ApiError.json("REQUEST_TOO_LARGE", message));
     }
 
     private static boolean isIngestPost(HttpServletRequest request) {

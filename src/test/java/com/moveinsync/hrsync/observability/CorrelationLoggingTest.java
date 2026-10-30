@@ -145,7 +145,7 @@ class CorrelationLoggingTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(issued).isNotBlank().isNotEqualTo("bad id").doesNotContain(" ");
         JsonNode body = objectMapper.readTree(response.getBody());
-        assertThat(body.get("error").asText()).isEqualTo("UNAUTHORIZED");
+        assertThat(body.get("code").asText()).isEqualTo("UNAUTHORIZED");
         assertThat(body.get("message").asText()).isEqualTo("Authentication required");
         assertThat(body.get("correlationId").asText()).isEqualTo(issued);
         assertThat(response.getBody()).doesNotContain(PASSWORD);

@@ -2,7 +2,8 @@ package com.moveinsync.hrsync;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.api.IngestBodySizeFilter;
-import com.moveinsync.hrsync.api.IngestExceptionHandler;
+import com.moveinsync.hrsync.api.ApiExceptionHandler;
+import com.moveinsync.hrsync.config.DatabaseSettings;
 import com.moveinsync.hrsync.api.SyncBatchRequest;
 import com.moveinsync.hrsync.api.SyncEventController;
 import com.moveinsync.hrsync.api.SyncEventRequest;
@@ -49,7 +50,7 @@ class IngestGuardTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("BATCH_TOO_LARGE"))
+                .andExpect(jsonPath("$.code").value("BATCH_TOO_LARGE"))
                 .andExpect(jsonPath("$.message").value("Batch exceeds the maximum of 2 events"))
                 .andReturn()
                 .getResponse()
@@ -70,7 +71,7 @@ class IngestGuardTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isPayloadTooLarge())
-                .andExpect(jsonPath("$.error").value("REQUEST_TOO_LARGE"))
+                .andExpect(jsonPath("$.code").value("REQUEST_TOO_LARGE"))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("maximum of 64 bytes")))
                 .andReturn()
                 .getResponse()
@@ -116,7 +117,7 @@ class IngestGuardTest {
                 new com.moveinsync.hrsync.metrics.SyncMeters(new io.micrometer.core.instrument.simple.SimpleMeterRegistry())
         );
         return MockMvcBuilders.standaloneSetup(new SyncEventController(service, limits))
-                .setControllerAdvice(new IngestExceptionHandler())
+                .setControllerAdvice(new ApiExceptionHandler(new DatabaseSettings()))
                 .addFilters(new IngestBodySizeFilter(limits))
                 .build();
     }

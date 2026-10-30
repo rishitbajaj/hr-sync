@@ -5,7 +5,8 @@ import org.springframework.http.HttpMethod;
 import java.util.List;
 
 /**
- * Every mapped endpoint must appear here. {@code SecurityConfig} denies anything this list does not name.
+ * Every mapped endpoint must appear here. A mapped path with no rule is denied.
+ * A path that no controller maps is not found. A path mapped for another method is not allowed.
  */
 public final class HttpRules {
 

@@ -4,8 +4,8 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import com.moveinsync.hrsync.api.ApiError;
 import com.moveinsync.hrsync.metrics.SyncMeters;
-import com.moveinsync.hrsync.observability.CorrelationIds;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -68,11 +68,6 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("application/json");
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        String correlationId = CorrelationIds.current();
-        String body = correlationId == null
-                ? "{\"error\":\"UNAUTHORIZED\",\"message\":\"" + UNAUTHORIZED_MESSAGE + "\"}"
-                : "{\"error\":\"UNAUTHORIZED\",\"message\":\"" + UNAUTHORIZED_MESSAGE + "\",\"correlationId\":\""
-                + correlationId + "\"}";
-        response.getWriter().write(body);
+        response.getWriter().write(ApiError.json("UNAUTHORIZED", UNAUTHORIZED_MESSAGE));
     }
 }
