@@ -10,6 +10,7 @@ import com.moveinsync.hrsync.domain.EmployeeStatus;
 import com.moveinsync.hrsync.domain.EventType;
 import com.moveinsync.hrsync.domain.IngestResult;
 import com.moveinsync.hrsync.domain.Outcome;
+import com.moveinsync.hrsync.domain.ReasonCode;
 import com.moveinsync.hrsync.domain.SyncEvent;
 import com.moveinsync.hrsync.repo.EmployeeRepository;
 import com.moveinsync.hrsync.repo.OfficeEntity;
@@ -144,6 +145,47 @@ class OrderingScenariosTest {
         StoredEmployee employee = stored("emp-race");
         assertThat(employee.hrVersion()).isEqualTo(50);
         assertThat(employee.name()).isEqualTo("v50");
+    }
+
+    @Test
+    void twentyThreadsCreatingTheSameNewEmployeeDoNotFailOnTheUniqueKey() throws Exception {
+        assertThat(employees.findByTenantIdAndEmployeeId(SampleHrBatch.TENANT, "emp-twin")).isEmpty();
+        ExecutorService pool = Executors.newFixedThreadPool(20);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<List<IngestResult>>> tasks = new ArrayList<>();
+        try {
+            for (int attempt = 0; attempt < 20; attempt++) {
+                tasks.add(pool.submit(() -> {
+                    start.await();
+                    return syncEvents.ingest(List.of(new SyncEvent(
+                            SampleHrBatch.TENANT,
+                            "emp-twin",
+                            1L,
+                            EventType.CREATE,
+                            new EmployeeFields("Twin", "emp-twin@example.com", "+15550000001", "M1", SampleHrBatch.OFFICE, null, null)
+                    )));
+                }));
+            }
+            start.countDown();
+            List<IngestResult> results = new ArrayList<>();
+            for (Future<List<IngestResult>> task : tasks) {
+                results.addAll(task.get(30, TimeUnit.SECONDS));
+            }
+            assertThat(results).hasSize(20);
+            assertThat(results).noneMatch(result ->
+                    result.outcome() == Outcome.REJECTED || result.reasonCode() == ReasonCode.APPLY_FAILED);
+            assertThat(results).filteredOn(result -> result.outcome() == Outcome.APPLIED).hasSize(1);
+            assertThat(results).filteredOn(result -> result.outcome() == Outcome.IGNORED)
+                    .hasSize(19)
+                    .allSatisfy(result -> assertThat(result.reasonCode()).isIn(ReasonCode.DUPLICATE, ReasonCode.STALE_IGNORED));
+        } finally {
+            pool.shutdownNow();
+        }
+
+        StoredEmployee employee = stored("emp-twin");
+        assertThat(employee.hrVersion()).isEqualTo(1);
+        assertThat(employee.status()).isEqualTo("ACTIVE");
+        assertThat(employee.name()).isEqualTo("Twin");
     }
 
     @Test
