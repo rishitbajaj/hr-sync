@@ -77,6 +77,14 @@ sequenceDiagram
 
 A second run for a tenant that already has `RUNNING` gets 409. Starting a run marks every older `HALTED` run for that tenant `SUPERSEDED`. Approving a `SUPERSEDED` run returns 409 with code `SUPERSEDED` and deactivates nobody. The latest halted run can still be approved once. A halted run for another tenant stays `HALTED`. Startup marks every `RUNNING` row `FAILED` with reason `INTERRUPTED`. Each create, update, and deactivation commits on its own, so a crash keeps the ones that committed. Approval deactivates only when `hr_version` still equals the version saved with the halt, and it does not insert `processed_event`.
 
+## Properties
+
+`EmployeeChangePropertiesTest` checks `EmployeeChangeApplier` with no Spring and no database. jqwik generates create, update, deactivate, and transport events, with versions, duplicates, and shuffled order. The seed is `424242`. A local run uses 1,000 tries (`src/test/resources/jqwik.properties`). CI passes `-Djqwik.tries.default=200`.
+
+The reference model is the same rule, written separately: a version applies only when it is strictly newer for that channel, a second copy of an applied `(employee, channel, version)` changes nothing, and each channel writes only its own fields. The stored channel version is the highest version in the set, in any arrival order. Folding the set in version order is what a batch does after it sorts, so every permutation of that ordered fold ends in the same state when two different payloads do not share one version. One event at a time is not the same for every arrival order. A higher version first makes the lower one stale, and a stale event writes nothing, which is the tombstone rule. Replaying a sequence applies nothing the second time. A stale or duplicate event is never `APPLIED`. A deactivate below the stored HR version is `STALE_IGNORED`, including when the idempotency row is already gone and the comparison is the only check.
+
+Changing `<=` to `<` in the version comparison makes `staleAndDuplicateEventsAreNeverApplied` fail, because an equal version with no idempotency row would apply again. Copying a pickup point from an HR event makes `channelsDoNotWriteEachOthersFields` fail. Both mutations were reverted.
+
 ## Data model
 
 `employee` is unique on `(tenant_id, employee_id)` and holds `hr_version`, `transport_version`, and status `ACTIVE`, `DEACTIVATED`, or `PLACEHOLDER`. The idempotency key is `(tenant_id, employee_id, channel, source_version)` on `processed_event`. HR and transport keep separate sequences. A matching key is `DUPLICATE`. A version that was never applied and is not newer than the channel version is `STALE_IGNORED`.

@@ -26,7 +26,7 @@ jobs:
           HR_SYNC_JWT_SECRET: 0123456789abcdef0123456789abcdef
           POSTGRES_PASSWORD: ci-dummy-password
           SPRING_DATASOURCE_PASSWORD: ci-dummy-password
-        run: mvn -B verify
+        run: mvn -B verify -Djqwik.tries.default=200
 
       - name: Upload Surefire reports
         if: always()
