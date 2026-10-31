@@ -6,6 +6,7 @@ import com.moveinsync.hrsync.config.KafkaSettings;
 import com.moveinsync.hrsync.domain.ChangeNotice;
 import com.moveinsync.hrsync.domain.EventPublisher;
 import com.moveinsync.hrsync.kafka.EmployeeChangeMessage;
+import com.moveinsync.hrsync.metrics.SyncMeters;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -15,6 +16,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Properties;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -29,39 +31,54 @@ public class KafkaEventPublisher implements EventPublisher {
 
     private final KafkaSettings settings;
     private final ObjectMapper objectMapper;
+    private final SyncMeters meters;
     private final KafkaProducer<String, String> producer;
     private volatile Consumer<ChangeNotice> beforeAck = notice -> {
     };
     private volatile Consumer<ChangeNotice> afterAck = notice -> {
     };
 
-    public KafkaEventPublisher(KafkaSettings settings, ObjectMapper objectMapper) {
+    public KafkaEventPublisher(KafkaSettings settings, ObjectMapper objectMapper, SyncMeters meters) {
         this.settings = settings;
         this.objectMapper = objectMapper;
+        this.meters = meters;
         this.producer = new KafkaProducer<>(producerProperties(settings));
     }
 
     @Override
     public void publish(ChangeNotice notice) {
-        ProducerRecord<String, String> record = new ProducerRecord<>(
-                settings.getTopic(),
-                EmployeeChangeMessage.key(notice),
-                json(notice)
-        );
-        if (notice.correlationId() != null && !notice.correlationId().isBlank()) {
-            record.headers().add(CORRELATION_HEADER, notice.correlationId().getBytes(StandardCharsets.UTF_8));
-        }
+        long started = System.nanoTime();
+        boolean acked = false;
         try {
+            ProducerRecord<String, String> record = new ProducerRecord<>(
+                    settings.getTopic(),
+                    EmployeeChangeMessage.key(notice),
+                    json(notice)
+            );
+            if (notice.correlationId() != null && !notice.correlationId().isBlank()) {
+                record.headers().add(CORRELATION_HEADER, notice.correlationId().getBytes(StandardCharsets.UTF_8));
+            }
             var future = producer.send(record);
             beforeAck.accept(notice);
             future.get(settings.getDeliveryTimeout().toMillis(), TimeUnit.MILLISECONDS);
+            acked = true;
+            meters.kafkaSent(Duration.ofNanos(System.nanoTime() - started));
             afterAck.accept(notice);
         } catch (InterruptedException exception) {
+            if (!acked) {
+                meters.kafkaFailed();
+            }
             Thread.currentThread().interrupt();
             throw new KafkaPublishException("kafka publish interrupted");
         } catch (TimeoutException | ExecutionException exception) {
+            if (!acked) {
+                meters.kafkaFailed();
+            }
             throw new KafkaPublishException("kafka publish failed", exception);
         } catch (RuntimeException exception) {
+            if (!acked) {
+                meters.kafkaFailed();
+            }
             if (exception instanceof KafkaPublishException) {
                 throw exception;
             }

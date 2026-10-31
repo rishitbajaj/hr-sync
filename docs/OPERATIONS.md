@@ -24,6 +24,9 @@ Timers publish histogram buckets and client-side p50, p95, and p99 gauges. Prefe
 | `outbox_pending` | gauge | | Pending outbox rows |
 | `outbox_oldest_pending_seconds` | gauge | | Age of the oldest pending row. Zero when nothing is pending |
 | `outbox_failed` | gauge | | Failed outbox rows |
+| `kafka_publish_seconds` | histogram | | Time from send until the broker ack. Failures are not recorded here |
+| `kafka_published_total` | counter | | Messages the broker acknowledged |
+| `kafka_publish_failures_total` | counter | | Sends that failed before an ack. A broker outage increments this and leaves the row pending |
 | `deactivation_bookings_cancelled_total` | counter | | Bookings cancelled by a deactivation |
 | `deactivation_seats_freed_total` | counter | | Seats freed by a deactivation |
 | `deactivation_effect_failures_total` | counter | | Deactivation effects that failed |
@@ -65,6 +68,7 @@ Outbox thresholds are from the 2026-10-30 load on this machine (`VUS=8`, 60s, re
 | `outbox_oldest_pending_seconds` | Above 30. Healthy samples stayed at 0. The stalled claim reached 196s in a 60s contention run. A killed process reached 75s while it was down, then the queue cleared |
 | `outbox_publish_rate_rows` | 0 for 1 minute while `outbox_pending` is above 0. Idle is pending 0, which is not this alert. The highest ingest sample was 4,046 rows/s |
 | `outbox_failed` | Above 0. Every load sample was 0 |
+| `kafka_publish_failures_total` | Increasing for 2 minutes while `outbox_pending` is above 0 and `kafka_published_total` is flat. Ingest still returns 200. The broker is not accepting publishes |
 | `reconciliation_halted_total` | Any increase |
 | `ingest_retryable_total` | Any increase for 1 minute. One batch during a database blip is expected and should stop once the caller resends. A continued increase means Postgres or the pool is still not answering |
 | HTTP 5xx | More than 1% of `http_server_requests_seconds_count` for 5 minutes |
@@ -72,10 +76,11 @@ Outbox thresholds are from the 2026-10-30 load on this machine (`VUS=8`, 60s, re
 
 ## 3 AM runbook
 
-1. Sign in as the operator and open `GET /actuator/prometheus`. Read `outbox_pending`, `outbox_oldest_pending_seconds`, `outbox_publish_rate_rows`, `outbox_claim_size_rows`, `outbox_failed`, `reconciliation_halted_total`, and the 5xx rate.
+1. Sign in as the operator and open `GET /actuator/prometheus`. Read `outbox_pending`, `outbox_oldest_pending_seconds`, `outbox_publish_rate_rows`, `outbox_claim_size_rows`, `outbox_failed`, `kafka_publish_failures_total`, `kafka_published_total`, `reconciliation_halted_total`, and the 5xx rate.
 2. Take the `correlationId` from the error body or the `X-Correlation-Id` response header and find the same field in the JSON logs.
 3. Failed outbox rows: `GET /outbox/failed?tenantId={tenant}` as the operator.
 4. Replay one row: `POST /outbox/{id}/replay?tenantId={tenant}`.
 5. Discard one row when it must not be published: `POST /outbox/{id}/discard?tenantId={tenant}` with `{"reason":"..."}`. The reason is required. Only a failed row can be changed.
 6. A halted reconciliation: `GET /reconciliation/runs/{id}?tenantId={tenant}`. If the missing-row brake is accepted, `POST /reconciliation/runs/{id}/approve?tenantId={tenant}` as the operator.
 7. A `503` with `Retry-After` means the database or the pool did not answer inside the timeout (about 3 seconds). Check Postgres. A read returns `{"code":"UNAVAILABLE","message":"Database is unavailable","correlationId":"..."}`. An ingest returns `results` and `correlationId`: `RETRYABLE_ERROR` / `DATABASE_UNAVAILABLE` for the record that hit the database, and `RETRYABLE_ERROR` / `NOT_PROCESSED` for the ones the server did not attempt. After Postgres answers, send the batch again. `ingest_retryable_total` counts those outcomes.
+8. Kafka outage: `kafka_publish_failures_total` is increasing and `kafka_published_total` is flat while `outbox_pending` climbs. `POST /sync/events` still returns 200, and the new rows stay `PENDING`. Check the broker (`docker compose ps`, then the Kafka logs). Do not restart the app to clear the backlog, and do not ask the caller to resend. When the broker accepts requests again, the poller drains each employee's rows in order. A row that was acknowledged and then crashed before `PUBLISHED` is delivered again with the same `eventId`. Consumers dedupe on `eventId`.

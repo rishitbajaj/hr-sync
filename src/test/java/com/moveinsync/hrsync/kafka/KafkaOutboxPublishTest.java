@@ -212,7 +212,10 @@ class KafkaOutboxPublishTest {
         List<Long> ids = outboxIds(tenant, "emp-1");
         assertThat(ids).hasSize(2);
         assertThat(outboxCount(tenant, "emp-bad")).isZero();
+        double sent = registry.counter("kafka.published").count();
         drain();
+        assertThat(registry.counter("kafka.published").count()).isEqualTo(sent + 2);
+        assertThat(registry.timer("kafka.publish").count()).isEqualTo((long) sent + 2);
 
         List<ConsumerRecord<String, String>> messages = messagesFor(tenant);
         assertThat(messages).hasSize(2);
@@ -275,7 +278,9 @@ class KafkaOutboxPublishTest {
             ResponseEntity<String> renamed = postEvents(tenant, "emp-1", 2, "UPDATE", "{\"name\":\"Ada Two\"}");
             assertThat(renamed.getStatusCode()).isEqualTo(HttpStatus.OK);
             assertThat(pending(tenant)).isEqualTo(2);
+            double failed = registry.counter("kafka.publish.failures").count();
             assertThat(poller.poll()).isZero();
+            assertThat(registry.counter("kafka.publish.failures").count()).isGreaterThan(failed);
             assertThat(statuses(tenant, "emp-1")).containsExactly("PENDING", "PENDING");
             outboxMetrics.sample();
             assertThat(registry.get("outbox.pending").gauge().value()).isGreaterThan(before);

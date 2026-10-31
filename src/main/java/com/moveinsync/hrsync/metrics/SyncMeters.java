@@ -19,6 +19,7 @@ public class SyncMeters {
     private final MeterRegistry registry;
     private final Timer ingestDuration;
     private final Timer reconciliationDuration;
+    private final Timer kafkaPublish;
     private final DistributionSummary claimSize;
     private final AtomicLong publishRateMilli = new AtomicLong();
 
@@ -35,6 +36,10 @@ public class SyncMeters {
                 .publishPercentiles(0.5, 0.95, 0.99)
                 .register(registry);
         this.reconciliationDuration = Timer.builder("reconciliation.duration")
+                .publishPercentileHistogram()
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .register(registry);
+        this.kafkaPublish = Timer.builder("kafka.publish")
                 .publishPercentileHistogram()
                 .publishPercentiles(0.5, 0.95, 0.99)
                 .register(registry);
@@ -82,6 +87,15 @@ public class SyncMeters {
 
     public void outboxRetried() {
         registry.counter("outbox.retries").increment();
+    }
+
+    public void kafkaSent(Duration duration) {
+        kafkaPublish.record(duration);
+        registry.counter("kafka.published").increment();
+    }
+
+    public void kafkaFailed() {
+        registry.counter("kafka.publish.failures").increment();
     }
 
     public void bookingsCancelled(int count) {

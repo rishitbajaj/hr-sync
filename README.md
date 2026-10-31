@@ -11,7 +11,7 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-The app listens on port 8080 and Postgres on port 5432. `GET /health` is open and returns 200 when the process is up. Set `SPRING_PROFILES_ACTIVE=demo` in `.env` before that command when you want the booking endpoints below. There is no HTTP API for offices. Insert one for the admin tenant:
+The app listens on port 8080 and Postgres on port 5432. Compose also starts a single-node Kafka in KRaft mode, creates the topic `hr-sync.employee-changes` with 6 partitions, and sets the app publisher to `kafka`. The app waits until that broker is healthy. Host consumers use `localhost:9092`. The app uses `kafka:19092` on the compose network. `GET /health` is open and returns 200 when the process is up. Set `SPRING_PROFILES_ACTIVE=demo` in `.env` before that command when you want the booking endpoints below. There is no HTTP API for offices. Insert one for the admin tenant:
 
 ```bash
 docker compose exec -T postgres psql -U hrsync -d hrsync -c \
@@ -19,6 +19,16 @@ docker compose exec -T postgres psql -U hrsync -d hrsync -c \
 ```
 
 Run that from a shell that has sourced `.env`, or substitute the tenant yourself.
+
+An applied change is one Kafka message. The key is `tenantId:employeeId`, so one employee's events stay in one partition. The JSON value is `eventId`, `tenantId`, `employeeId`, `eventType`, `changedFields` (names only), `sequence` (the outbox id), `occurredAt`, and `schemaVersion`. The header is `correlationId` when the request had one. The message has no phone, email, name, or pickup point. A stale, duplicate, or rejected change produces none. The row is marked published only after the broker acks. Ingest does not wait on Kafka. If the broker is down, the batch still returns 200 and the outbox stays pending until the broker is back.
+
+Read the topic from the host, drop duplicate event ids, and check per-employee order. The script prints counts only.
+
+```bash
+./scripts/kafka-demo-consumer.sh
+```
+
+`HR_SYNC_KAFKA_BOOTSTRAP_SERVERS` defaults to `localhost:9092` and `HR_SYNC_KAFKA_TOPIC` to `hr-sync.employee-changes`. The line looks like `read=8 unique=8 duplicates=0 orderViolations=0 malformed=0`. A broken order or an unreadable record exits 1.
 
 ## Walkthrough
 
@@ -148,7 +158,7 @@ While the app is still starting, `GET /health` can reset the connection for a fe
 
 ## Assumptions
 
-One app process and one Postgres. Offices exist before an HR event names them. The admin acts only in the bootstrap tenant. Tokens are HS256 JWTs that last 15 minutes. Bookings live in the same database, schema `booking_svc`, and each cancel commits on its own. The publisher logs the notice in this process. It does not call a broker. The age gauge has one-second resolution.
+One app process, one Postgres, and one Kafka broker. Offices exist before an HR event names them. The admin acts only in the bootstrap tenant. Tokens are HS256 JWTs that last 15 minutes. Bookings live in the same database, schema `booking_svc`, and each cancel commits on its own. The outbox is still the source of truth. Compose publishes to Kafka after the in-process deactivation effect. Tests use the logging publisher unless they start Kafka. The age gauge has one-second resolution.
 
 ## API
 
@@ -386,7 +396,7 @@ A rerun of that kill command after the invariant change exited 0. Of 110,600 eve
 
 ## Verification
 
-`mvn -B test` on 2026-10-30: 192 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2373 peakHeapBytes=85610272 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-31: 203 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2599 peakHeapBytes=87361296 maxHeapBytes=268435456`.
 
 ## Known limitations
 

@@ -11,14 +11,15 @@ flowchart LR
   auth --> applier[Applier]
   applier --> pg[(Postgres)]
   pg --> poller[Outbox poller]
-  poller --> booking[Booking client]
-  poller --> publisher[Publisher]
+  poller --> effect[Deactivation effect]
+  effect --> publisher[Publisher]
+  publisher --> kafka[Kafka or log]
   api --> recon[Reconciliation]
   recon --> applier
   poller --> metrics[Metrics]
 ```
 
-The applier locks the employee row and commits that event, its `processed_event` row, and its outbox row in one transaction. A placeholder writes no outbox row. The poller locks each employee's oldest pending row (`FOR UPDATE SKIP LOCKED`) and the following pending rows of that employee, up to `employee-cap`, and publishes that run in id order. A failure stops the rest of that employee's run. Other employees continue. The booking cancel commits in its own transaction. `deactivation_effect` and the `PUBLISHED` mark commit with the poller transaction. The publisher logs the notice. Metrics are Micrometer gauges and counters, scraped at `GET /actuator/prometheus` by an operator.
+The applier locks the employee row and commits that event, its `processed_event` row, and its outbox row in one transaction. A placeholder writes no outbox row. The poller locks each employee's oldest pending row (`FOR UPDATE SKIP LOCKED`) and the following pending rows of that employee, up to `employee-cap`, and publishes that run in id order. A failure stops the rest of that employee's run. Other employees continue. The booking cancel commits in its own transaction. The effect row is inserted in the poller transaction, then Kafka is asked to ack. `PUBLISHED` is written only after that ack, in the same transaction. A Kafka failure commits the effect row with the attempt and does not cancel bookings again on the retry. The message key is `tenantId:employeeId`. The value is ids, the event type, changed field names, the outbox id as `sequence`, `occurredAt`, and `schemaVersion`. The header is `correlationId`. There is no phone, email, name, or pickup point. Metrics are Micrometer gauges, counters, and timers, scraped at `GET /actuator/prometheus` by an operator.
 
 ## Deactivation
 
@@ -38,8 +39,15 @@ sequenceDiagram
   API-->>Admin: 200 APPLIED
   Poller->>DB: lock that employee's head and the next pending rows
   Poller->>Booking: cancel bookings that start after outbox created_at
-  Note over Booking,DB: Crash after that commit: outbox stays PENDING. Redelivery reads the same cancellations
-  Poller->>DB: insert deactivation_effect and mark the run PUBLISHED
+  Note over Booking,DB: That cancel commits on its own. A crash before the effect row leaves the outbox PENDING
+  Poller->>DB: insert deactivation_effect in the poller transaction
+  Poller->>Kafka: send and wait for the ack
+  alt broker acks
+    Poller->>DB: mark the run PUBLISHED and commit
+  else broker down, or the process dies after the ack
+    Poller->>DB: record the failure and commit the effect row
+    Note over Poller,Kafka: The same eventId may already be on the topic. A consumer dedupes on it
+  end
 ```
 
 The cutoff is the outbox row's `created_at`, so a retry uses the same instant. A later create does not restore cancelled bookings. A `FAILED` `EMPLOYEE_DEACTIVATED` row blocks later rows for that employee until an operator replays or discards it.
@@ -86,6 +94,9 @@ HR may write name, email, phone, manager, office, shift, `hr_version`, and statu
 | App killed mid-reconciliation | No final body | Restart marks the `RUNNING` row `FAILED` / `INTERRUPTED`. Committed applies stay. A new run can start |
 | Booking client throws | The ingest already returned 200 | The outbox row stays `PENDING`, attempts increase, and that employee's later rows in the run are not published. After 5 attempts it is `FAILED` and blocks that employee. Replay or discard |
 | Publisher throws | Same as a booking failure | Same retry. Other employees in the tick continue |
+| Kafka down | Ingest still returns 200. The outbox row stays `PENDING`. `outbox_pending` and `kafka_publish_failures_total` rise | Do not resend the batch. When the broker accepts again, the poller drains that employee's rows in id order. Other employees keep publishing |
+| Broker restart | Ingest still returns 200. An in-flight ack can be lost or can land after the client gave up | The row stays `PENDING` until a later attempt observes an ack. A record that already landed is delivered again with the same `eventId` |
+| Duplicate delivery | The consumer sees one `eventId` more than once | The broker acked and the process died before `PUBLISHED`, or a timed-out send landed and the retry sent it again. Dedupe on `eventId`. Order for one employee is the `sequence` |
 | Duplicate or out-of-order event | 200, `DUPLICATE` or `STALE_IGNORED` | Nothing is written. A batch is applied in version order. The response stays in request order |
 | Truncated export | 200, run `HALTED`, `MISSING_RATIO_EXCEEDED` | No deactivation until an operator approves. The threshold is 0.30. A repeated employee id, or a row for another tenant, is 400 and writes no employees |
 | Approving a superseded halt | 409 `SUPERSEDED` | A later run for that tenant replaced this one. Approve the later halted run. Another tenant's halt stays `HALTED` |
@@ -94,7 +105,9 @@ HR may write name, email, phone, manager, office, shift, `hr_version`, and statu
 
 ## Choices
 
-Consistency over availability. A change is not acknowledged until its transaction commits, and a later event for an employee waits while an earlier one is unpublished or a deactivation for them is `FAILED`. Availability is the 503: the caller retries, and idempotency makes the retry safe. Latency is spent on purpose. Each event is its own transaction, so a batch of 100 holds one pool connection for the whole request. The employee cache can be 10 seconds stale on another node, and an office can be 60 seconds stale. Login lockouts are in memory. The publisher does not leave the process. Reconciliation deactivation does not advance `hr_version` or write `processed_event`; the guard is the version captured at diff time.
+Consistency over availability. A change is not acknowledged until its transaction commits, and a later event for an employee waits while an earlier one is unpublished or a deactivation for them is `FAILED`. Availability is the 503: the caller retries, and idempotency makes the retry safe. Latency is spent on purpose. Each event is its own transaction, so a batch of 100 holds one pool connection for the whole request. The employee cache can be 10 seconds stale on another node, and an office can be 60 seconds stale. Login lockouts are in memory. Logging mode stays in this process. Kafka mode publishes after the effect and still commits the outbox here. A broker outage does not fail ingest. Reconciliation deactivation does not advance `hr_version` or write `processed_event`; the guard is the version captured at diff time.
+
+A later version can move the deactivation effect to its own consumer of `hr-sync.employee-changes`. The outbox would only publish, and that consumer would dedupe on `eventId` the way the demo consumer does. This version keeps the effect in the poller, before the send, so a booking cancel does not wait on a second service.
 
 ## Cost
 
