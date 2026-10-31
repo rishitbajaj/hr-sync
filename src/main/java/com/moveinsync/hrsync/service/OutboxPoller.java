@@ -5,8 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.config.OutboxSettings;
 import com.moveinsync.hrsync.domain.ChangeNotice;
 import com.moveinsync.hrsync.domain.EventPublisher;
+import com.moveinsync.hrsync.domain.PublishResult;
 import com.moveinsync.hrsync.metrics.SyncMeters;
-import com.moveinsync.hrsync.observability.MdcScope;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +23,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -181,20 +183,26 @@ public class OutboxPoller {
     private Batch claimAndPublish(int batchSize) {
         int limit = Math.max(1, batchSize);
         List<Head> heads = findHeads(limit);
-        int index = 0;
         int claimed = 0;
         int delivered = 0;
         boolean more = false;
-        int parallelism = publishers == null ? 1 : Math.max(1, settings.getPublisherThreads());
-        while (index < heads.size() && claimed < limit) {
-            int room = limit - claimed;
-            int slots = Math.min(parallelism, Math.min(heads.size() - index, room));
-            int each = Math.min(employeeCap(), Math.max(1, (room + slots - 1) / slots));
-            List<Work> wave = new ArrayList<>(slots);
+        if (!heads.isEmpty()) {
+            int parallelism = publishers == null ? 1 : Math.max(1, settings.getPublisherThreads());
+            int slots = Math.min(parallelism, heads.size());
+            int share = Math.max(1, (limit + slots - 1) / slots);
+            List<List<Head>> groups = new ArrayList<>();
             for (int slot = 0; slot < slots; slot++) {
-                wave.add(new Work(heads.get(index + slot), each));
+                groups.add(new ArrayList<>());
             }
-            index += slots;
+            for (int index = 0; index < heads.size(); index++) {
+                groups.get(index % slots).add(heads.get(index));
+            }
+            List<Work> wave = new ArrayList<>();
+            for (int index = 0; index < slots; index++) {
+                if (!groups.get(index).isEmpty()) {
+                    wave.add(new Work(groups.get(index), share));
+                }
+            }
             for (Run run : runWave(wave)) {
                 claimed += run.claimed;
                 delivered += run.delivered;
@@ -229,6 +237,9 @@ public class OutboxPoller {
                 runs.add(future.get(2, TimeUnit.MINUTES));
             } catch (ExecutionException exception) {
                 Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+                if (cause instanceof Error error) {
+                    throw error;
+                }
                 failure = cause instanceof RuntimeException runtime
                         ? runtime
                         : new IllegalStateException(cause);
@@ -246,7 +257,7 @@ public class OutboxPoller {
     }
 
     private Run publishRun(Work work) {
-        Run run = transactions.execute(status -> deliverRun(work));
+        Run run = transactions.execute(status -> deliverBatch(work));
         if (run == null) {
             return new Run(work.limit, 0, 0);
         }
@@ -254,31 +265,53 @@ public class OutboxPoller {
         return run;
     }
 
-    private Run deliverRun(Work work) {
-        List<Long> locked = jdbc.query(LOCK_HEAD, (rs, row) -> rs.getLong("id"), work.head.id, work.head.tenantId);
+    private Run deliverBatch(Work work) {
+        List<List<Claimed>> runs = new ArrayList<>();
+        int claimed = 0;
+        int perEmployee = Math.min(
+                employeeCap(),
+                Math.max(1, (work.limit + work.heads.size() - 1) / work.heads.size())
+        );
+        for (Head head : work.heads) {
+            if (claimed >= work.limit) {
+                break;
+            }
+            int room = Math.min(perEmployee, work.limit - claimed);
+            List<Claimed> ready = lockReady(head, room);
+            claimed += ready.size();
+            if (!ready.isEmpty()) {
+                runs.add(ready);
+            }
+        }
+        int delivered = publishRounds(runs);
+        return new Run(work.limit, claimed, delivered);
+    }
+
+    private List<Claimed> lockReady(Head head, int limit) {
+        List<Long> locked = jdbc.query(LOCK_HEAD, (rs, row) -> rs.getLong("id"), head.id, head.tenantId);
         if (locked.isEmpty()) {
-            return new Run(work.limit, 0, 0);
+            return List.of();
         }
         List<Integer> blocked = jdbc.query(
                 BLOCKED,
                 (rs, row) -> 1,
-                work.head.tenantId,
-                work.head.aggregateId,
-                work.head.id
+                head.tenantId,
+                head.aggregateId,
+                head.id
         );
         if (!blocked.isEmpty()) {
-            return new Run(work.limit, 0, 0);
+            return List.of();
         }
         List<Claimed> rows = jdbc.query(
                 LOCK_RUN,
                 (rs, row) -> mapClaim(rs),
-                work.head.tenantId,
-                work.head.aggregateId,
-                work.head.id,
-                work.limit
+                head.tenantId,
+                head.aggregateId,
+                head.id,
+                limit
         );
-        if (rows.isEmpty() || rows.get(0).notice().eventId() != work.head.id) {
-            return new Run(work.limit, 0, 0);
+        if (rows.isEmpty() || rows.get(0).notice().eventId() != head.id) {
+            return List.of();
         }
         List<Claimed> ready = new ArrayList<>();
         Instant now = clock.instant();
@@ -288,25 +321,65 @@ public class OutboxPoller {
             }
             ready.add(row);
         }
-        List<Long> publishedIds = new ArrayList<>();
-        for (Claimed claimedRow : ready) {
-            try (MdcScope ignored = MdcScope.open("correlationId", claimedRow.correlationId)
-                    .and("tenantId", claimedRow.notice().tenantId())
-                    .and("eventId", Long.toString(claimedRow.notice().eventId()))
-                    .and("employeeId", claimedRow.notice().aggregateId())) {
-                guard.beforePublish(claimedRow.notice());
-                try {
-                    publisher.publish(claimedRow.notice());
-                } catch (RuntimeException exception) {
-                    recordFailure(claimedRow, exception);
-                    meters.outboxRetried();
-                    break;
+        return ready;
+    }
+
+    private int publishRounds(List<List<Claimed>> runs) {
+        if (runs.isEmpty()) {
+            return 0;
+        }
+        int rounds = 0;
+        for (List<Claimed> run : runs) {
+            rounds = Math.max(rounds, run.size());
+        }
+        boolean[] skip = new boolean[runs.size()];
+        int delivered = 0;
+        for (int round = 0; round < rounds; round++) {
+            List<Claimed> slice = new ArrayList<>();
+            List<Integer> owners = new ArrayList<>();
+            for (int index = 0; index < runs.size(); index++) {
+                if (skip[index] || runs.get(index).size() <= round) {
+                    continue;
                 }
-                publishedIds.add(claimedRow.notice().eventId());
+                Claimed claimedRow = runs.get(index).get(round);
+                guard.beforePublish(claimedRow.notice());
+                slice.add(claimedRow);
+                owners.add(index);
+            }
+            if (slice.isEmpty()) {
+                continue;
+            }
+            List<ChangeNotice> notices = new ArrayList<>(slice.size());
+            for (Claimed claimedRow : slice) {
+                notices.add(claimedRow.notice());
+            }
+            List<PublishResult> results = publisher.publishRound(notices);
+            Map<Long, PublishResult> byId = new HashMap<>();
+            for (PublishResult result : results) {
+                byId.put(result.notice().eventId(), result);
+            }
+            Map<String, List<Long>> ackedByTenant = new HashMap<>();
+            for (int index = 0; index < slice.size(); index++) {
+                Claimed claimedRow = slice.get(index);
+                PublishResult result = byId.get(claimedRow.notice().eventId());
+                if (result != null && result.acked()) {
+                    ackedByTenant.computeIfAbsent(claimedRow.notice().tenantId(), key -> new ArrayList<>())
+                            .add(claimedRow.notice().eventId());
+                    delivered++;
+                    continue;
+                }
+                RuntimeException failure = result == null
+                        ? new IllegalStateException("publish round dropped an event")
+                        : result.failure();
+                recordFailure(claimedRow, failure);
+                meters.outboxRetried();
+                skip[owners.get(index)] = true;
+            }
+            for (Map.Entry<String, List<Long>> entry : ackedByTenant.entrySet()) {
+                markPublished(entry.getKey(), entry.getValue());
             }
         }
-        markPublished(work.head.tenantId, publishedIds);
-        return new Run(work.limit, ready.size(), publishedIds.size());
+        return delivered;
     }
 
     private void markPublished(String tenantId, List<Long> ids) {
@@ -460,7 +533,7 @@ public class OutboxPoller {
     private record Head(long id, String tenantId, String aggregateId) {
     }
 
-    private record Work(Head head, int limit) {
+    private record Work(List<Head> heads, int limit) {
     }
 
     private record Run(int requested, int claimed, int delivered) {

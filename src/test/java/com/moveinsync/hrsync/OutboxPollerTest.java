@@ -228,12 +228,12 @@ class OutboxPollerTest {
         publisher.clear();
 
         while (poller.poll() > 0) {
-            // one employee's pending run, then the next employee
+            // rounds interleave employees; each employee's versions stay in order
         }
 
         List<ChangeNotice> published = publisher.published();
         assertThat(published).extracting(ChangeNotice::aggregateId)
-                .containsExactly("emp-order", "emp-order", "emp-order", "emp-other");
+                .containsExactlyInAnyOrder("emp-order", "emp-order", "emp-order", "emp-other");
         List<ChangeNotice> employee = published.stream()
                 .filter(notice -> "emp-order".equals(notice.aggregateId()))
                 .toList();
@@ -322,7 +322,7 @@ class OutboxPollerTest {
             Future<Integer> running = pool.submit(() -> first.poll(4));
             assertThat(held.await(20, TimeUnit.SECONDS)).isTrue();
 
-            assertThat(second.poll(4)).isEqualTo(1);
+            assertThat(second.poll(4)).isZero();
             assertThat(publisher.published().stream()
                     .filter(notice -> "emp-run".equals(notice.aggregateId()))
                     .map(ChangeNotice::eventId)
@@ -330,7 +330,10 @@ class OutboxPollerTest {
             assertThat(statusOf(runIds.get(1))).isEqualTo("PENDING");
 
             release.countDown();
-            assertThat(running.get(20, TimeUnit.SECONDS)).isEqualTo(4);
+            assertThat(running.get(20, TimeUnit.SECONDS)).isEqualTo(3);
+            while (poller.poll() > 0) {
+                // the row budget left the tail of emp-run for the next claim
+            }
         } finally {
             release.countDown();
             pool.shutdownNow();

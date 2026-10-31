@@ -21,7 +21,9 @@ public class KafkaSettings {
 
     private Duration requestTimeout = Duration.ofMillis(1500);
 
-    private Duration linger = Duration.ofMillis(5);
+    private Duration linger = Duration.ofMillis(1);
+
+    private int batchSize = 65536;
 
     private String compression = "lz4";
 
@@ -79,6 +81,14 @@ public class KafkaSettings {
 
     public void setRequestTimeout(Duration requestTimeout) {
         this.requestTimeout = requestTimeout;
+    }
+
+    public int getBatchSize() {
+        return batchSize;
+    }
+
+    public void setBatchSize(int batchSize) {
+        this.batchSize = batchSize;
     }
 
     public Duration getLinger() {

@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.config.KafkaSettings;
 import com.moveinsync.hrsync.domain.ChangeNotice;
 import com.moveinsync.hrsync.domain.EventPublisher;
+import com.moveinsync.hrsync.domain.PublishResult;
 import com.moveinsync.hrsync.kafka.EmployeeChangeMessage;
+import com.moveinsync.hrsync.observability.MdcScope;
 import com.moveinsync.hrsync.metrics.SyncMeters;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -17,8 +19,11 @@ import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
@@ -47,43 +52,87 @@ public class KafkaEventPublisher implements EventPublisher {
 
     @Override
     public void publish(ChangeNotice notice) {
-        long started = System.nanoTime();
-        boolean acked = false;
-        try {
-            ProducerRecord<String, String> record = new ProducerRecord<>(
-                    settings.getTopic(),
-                    EmployeeChangeMessage.key(notice),
-                    json(notice)
-            );
-            if (notice.correlationId() != null && !notice.correlationId().isBlank()) {
-                record.headers().add(CORRELATION_HEADER, notice.correlationId().getBytes(StandardCharsets.UTF_8));
-            }
-            var future = producer.send(record);
-            beforeAck.accept(notice);
-            future.get(settings.getDeliveryTimeout().toMillis(), TimeUnit.MILLISECONDS);
-            acked = true;
-            meters.kafkaSent(Duration.ofNanos(System.nanoTime() - started));
-            afterAck.accept(notice);
-        } catch (InterruptedException exception) {
-            if (!acked) {
-                meters.kafkaFailed();
-            }
-            Thread.currentThread().interrupt();
-            throw new KafkaPublishException("kafka publish interrupted");
-        } catch (TimeoutException | ExecutionException exception) {
-            if (!acked) {
-                meters.kafkaFailed();
-            }
-            throw new KafkaPublishException("kafka publish failed", exception);
-        } catch (RuntimeException exception) {
-            if (!acked) {
-                meters.kafkaFailed();
-            }
-            if (exception instanceof KafkaPublishException) {
-                throw exception;
-            }
-            throw new KafkaPublishException("kafka publish failed", exception);
+        List<PublishResult> results = publishRound(List.of(notice));
+        PublishResult result = results.get(0);
+        if (!result.acked()) {
+            throw result.failure();
         }
+    }
+
+    @Override
+    public List<PublishResult> publishRound(List<ChangeNotice> notices) {
+        List<PublishResult> results = new ArrayList<>(notices.size());
+        List<ChangeNotice> waiting = new ArrayList<>(notices.size());
+        List<Future<?>> futures = new ArrayList<>(notices.size());
+        List<Long> startedAt = new ArrayList<>(notices.size());
+        for (ChangeNotice notice : notices) {
+            try (MdcScope ignored = scope(notice)) {
+                long started = System.nanoTime();
+                ProducerRecord<String, String> record = record(notice);
+                Future<?> future = producer.send(record);
+                beforeAck.accept(notice);
+                waiting.add(notice);
+                futures.add(future);
+                startedAt.add(started);
+            } catch (RuntimeException exception) {
+                meters.kafkaFailed();
+                results.add(new PublishResult(notice, wrap(exception)));
+            }
+        }
+        for (int index = 0; index < futures.size(); index++) {
+            ChangeNotice notice = waiting.get(index);
+            boolean acked = false;
+            try (MdcScope ignored = scope(notice)) {
+                futures.get(index).get(settings.getDeliveryTimeout().toMillis(), TimeUnit.MILLISECONDS);
+                acked = true;
+                meters.kafkaSent(Duration.ofNanos(System.nanoTime() - startedAt.get(index)));
+                afterAck.accept(notice);
+                results.add(new PublishResult(notice, null));
+            } catch (InterruptedException exception) {
+                if (!acked) {
+                    meters.kafkaFailed();
+                }
+                Thread.currentThread().interrupt();
+                results.add(new PublishResult(notice, new KafkaPublishException("kafka publish interrupted")));
+            } catch (TimeoutException | ExecutionException exception) {
+                if (!acked) {
+                    meters.kafkaFailed();
+                }
+                results.add(new PublishResult(notice, new KafkaPublishException("kafka publish failed", exception)));
+            } catch (RuntimeException exception) {
+                if (!acked) {
+                    meters.kafkaFailed();
+                }
+                results.add(new PublishResult(notice, wrap(exception)));
+            }
+        }
+        return results;
+    }
+
+    private ProducerRecord<String, String> record(ChangeNotice notice) {
+        ProducerRecord<String, String> record = new ProducerRecord<>(
+                settings.getTopic(),
+                EmployeeChangeMessage.key(notice),
+                json(notice)
+        );
+        if (notice.correlationId() != null && !notice.correlationId().isBlank()) {
+            record.headers().add(CORRELATION_HEADER, notice.correlationId().getBytes(StandardCharsets.UTF_8));
+        }
+        return record;
+    }
+
+    private static MdcScope scope(ChangeNotice notice) {
+        return MdcScope.open("correlationId", notice.correlationId())
+                .and("tenantId", notice.tenantId())
+                .and("eventId", Long.toString(notice.eventId()))
+                .and("employeeId", notice.aggregateId());
+    }
+
+    private static KafkaPublishException wrap(RuntimeException exception) {
+        if (exception instanceof KafkaPublishException kafkaPublishException) {
+            return kafkaPublishException;
+        }
+        return new KafkaPublishException("kafka publish failed", exception);
     }
 
     public void setBeforeAck(Consumer<ChangeNotice> beforeAck) {
@@ -121,6 +170,7 @@ public class KafkaEventPublisher implements EventPublisher {
         properties.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, Long.toString(settings.getDeliveryTimeout().toMillis()));
         properties.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, Long.toString(settings.getRequestTimeout().toMillis()));
         properties.put(ProducerConfig.LINGER_MS_CONFIG, Long.toString(settings.getLinger().toMillis()));
+        properties.put(ProducerConfig.BATCH_SIZE_CONFIG, Integer.toString(settings.getBatchSize()));
         properties.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, settings.getCompression());
         properties.put(ProducerConfig.CLIENT_ID_CONFIG, "hr-sync");
         return properties;

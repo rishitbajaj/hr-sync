@@ -64,13 +64,14 @@ hr-sync:
     max-block: 1s
     delivery-timeout: 3s
     request-timeout: 1500ms
-    linger: 5ms
+    linger: 1ms
+    batch-size: 65536
     compression: lz4
   outbox:
     poll-interval: 1s
     batch-size: 400
     employee-cap: 100
-    publisher-threads: 2
+    publisher-threads: 1
     tick-budget: 3s
     max-attempts: 5
     retry-base: 500ms

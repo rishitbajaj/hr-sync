@@ -421,6 +421,121 @@ class KafkaOutboxPublishTest {
     }
 
     @Test
+    void manyEmployeesDrainWithinBoundAndKeepPerEmployeeOrder() throws Exception {
+        String tenant = "kafka-throughput";
+        saveOffice(tenant);
+        int employees = 40;
+        int versions = 10;
+        for (int employee = 0; employee < employees; employee++) {
+            String employeeId = "emp-" + employee;
+            assertThat(apply(create(tenant, employeeId, 1, "Person")).outcome()).isEqualTo(Outcome.APPLIED);
+            for (int version = 2; version <= versions; version++) {
+                assertThat(apply(rename(tenant, employeeId, version, "Person " + version)).outcome())
+                        .isEqualTo(Outcome.APPLIED);
+            }
+        }
+        Map<String, Long> inFlight = new java.util.concurrent.ConcurrentHashMap<>();
+        kafkaPublisher.setBeforeAck(notice -> {
+            Long already = inFlight.putIfAbsent(notice.tenantId() + ":" + notice.aggregateId(), notice.eventId());
+            assertThat(already).as("two rows of one employee in one round").isNull();
+        });
+        kafkaPublisher.setAfterAck(notice -> inFlight.remove(notice.tenantId() + ":" + notice.aggregateId()));
+        long started = System.nanoTime();
+        assertThat(poller.poll()).isGreaterThanOrEqualTo(20);
+        Map<String, List<Long>> firstRound = sequencesByKey(messagesFor(tenant));
+        assertThat(firstRound.size()).isGreaterThanOrEqualTo(10);
+        firstRound.values().forEach(sequence -> assertThat(sequence).hasSize(1));
+        drain();
+        long elapsedMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
+        kafkaPublisher.setBeforeAck(null);
+        kafkaPublisher.setAfterAck(null);
+        assertThat(elapsedMs).as("drain ms").isLessThan(20_000);
+        assertThat(pending(tenant)).isZero();
+        Map<String, List<Long>> sequences = sequencesByKey(messagesFor(tenant));
+        assertThat(sequences).hasSize(employees);
+        sequences.forEach((key, sequence) -> {
+            assertThat(sequence).hasSize(versions);
+            assertThat(sequence).isSortedAccordingTo(Comparator.naturalOrder());
+            assertThat(sequence).doesNotHaveDuplicates();
+        });
+    }
+
+    @Test
+    void failureMidRoundSkipsOnlyThatEmployee() throws Exception {
+        String tenant = "kafka-mid-round";
+        saveOffice(tenant);
+        apply(create(tenant, "emp-a", 1, "Ada"));
+        apply(rename(tenant, "emp-a", 2, "Ada Two"));
+        apply(rename(tenant, "emp-a", 3, "Ada Three"));
+        apply(create(tenant, "emp-b", 1, "Bea"));
+        apply(rename(tenant, "emp-b", 2, "Bea Two"));
+        apply(rename(tenant, "emp-b", 3, "Bea Three"));
+        List<Long> stopped = outboxIds(tenant, "emp-a");
+        List<Long> other = outboxIds(tenant, "emp-b");
+        kafkaPublisher.setBeforeAck(notice -> {
+            if (notice.eventId() == stopped.get(1)) {
+                throw new KafkaPublishException("down");
+            }
+        });
+
+        assertThat(poller.poll()).isEqualTo(4);
+        assertThat(eventIds(messagesFor(tenant))).doesNotContain(stopped.get(2));
+        assertThat(statusOf(stopped.get(2))).isEqualTo("PENDING");
+        assertThat(attemptsOf(stopped.get(1))).isEqualTo(1);
+        assertThat(statusOf(stopped.get(0))).isEqualTo("PUBLISHED");
+        assertThat(statuses(tenant, "emp-b")).containsExactly("PUBLISHED", "PUBLISHED", "PUBLISHED");
+        assertThat(eventIds(messagesFor(tenant))).contains(other.get(0), other.get(1), other.get(2));
+    }
+
+    @Test
+    void crashMidRoundRedeliversWithoutLossOrReordering() throws Exception {
+        String tenant = "kafka-mid-crash";
+        saveOffice(tenant);
+        apply(create(tenant, "emp-a", 1, "Ada"));
+        apply(rename(tenant, "emp-a", 2, "Ada Two"));
+        apply(create(tenant, "emp-b", 1, "Bea"));
+        apply(rename(tenant, "emp-b", 2, "Bea Two"));
+        List<Long> first = outboxIds(tenant, "emp-a");
+        List<Long> second = outboxIds(tenant, "emp-b");
+        kafkaPublisher.setAfterAck(notice -> {
+            if (notice.eventId() == first.get(0)) {
+                throw new Error("crash mid-round");
+            }
+        });
+
+        assertThatThrownBy(() -> poller.poll()).isInstanceOf(Error.class);
+        kafkaPublisher.setAfterAck(null);
+        assertThat(statuses(tenant, "emp-a")).containsExactly("PENDING", "PENDING");
+        assertThat(attemptsOf(first.get(0))).isZero();
+        assertThat(eventIds(messagesFor(tenant))).doesNotContain(first.get(1));
+
+        drain();
+        assertThat(statuses(tenant, "emp-a")).containsExactly("PUBLISHED", "PUBLISHED");
+        assertThat(statuses(tenant, "emp-b")).containsExactly("PUBLISHED", "PUBLISHED");
+        EmployeeChangeLog log = new EmployeeChangeLog();
+        for (ConsumerRecord<String, String> record : messagesFor(tenant)) {
+            long eventId = objectMapper.readTree(record.value()).get("eventId").asLong();
+            log.accept(eventId, record.key(), eventId);
+        }
+        assertThat(log.orderViolations()).isZero();
+        assertThat(log.unique()).isEqualTo(4);
+        assertThat(log.duplicates()).isGreaterThanOrEqualTo(1);
+        Map<String, List<Long>> sequences = sequencesByKey(messagesFor(tenant));
+        assertThat(deduped(sequences.get(tenant + ":emp-a"))).containsExactlyElementsOf(first);
+        assertThat(deduped(sequences.get(tenant + ":emp-b"))).containsExactlyElementsOf(second);
+    }
+
+    private static List<Long> deduped(List<Long> ids) {
+        List<Long> unique = new ArrayList<>();
+        for (Long id : ids) {
+            if (unique.isEmpty() || !unique.get(unique.size() - 1).equals(id)) {
+                unique.add(id);
+            }
+        }
+        return unique;
+    }
+
+    @Test
     void laterEventIsNotSentAfterAnEarlierFailure() throws Exception {
         String tenant = "kafka-stop";
         saveOffice(tenant);

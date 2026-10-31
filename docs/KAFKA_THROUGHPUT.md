@@ -42,3 +42,11 @@ The 11.473s is thread time inside `publish`, on the two `outbox-publish` threads
 The head lookup is a second cost, not the ceiling. Its mean of 501 ms on a claim of 400 adds about 0.5s to a claim whose acks already take 400/2 × 6.04 ms = 1.21s, which is about 234 rows/s for that claim. The last 9s of scrapes acknowledged 1,969 messages, 219 rows/s of wall time, between the 331-row ack ceiling and the lookup-loaded claim.
 
 Ingest in the same minute applied about 1,900 events/s. The publisher falls behind because a claimed batch of hundreds of rows is still delivered as two synchronous acks.
+
+## What the round publisher changes
+
+A claimed batch is split across the employees in it. Round k sends each employee's k-th row and waits for that round's acks before round k+1. A failed row drops that employee from later rounds. Rows are marked `PUBLISHED` only after their acks, in one update per tenant.
+
+The row budget is spread across the heads in the claim, so a deep queue does not fill the batch with one employee. On the ingest shape above (about 64 hot employees, batch 400) that is about six rows per employee per claim and one ack wait per round for the whole set.
+
+Producer settings after that measurement: `linger.ms` 1, `batch.size` 65536, lz4. A round is queued before anyone waits, so linger no longer holds a one-record batch for 5 ms, and 64 KiB holds the round in one produce request. `publisher-threads` is 1: the round already fans out, and a second thread would hold a second pool connection for the same wait. The Kafka tests still run with two threads. A 40-employee, 10-version drain on Testcontainers, including the applies, finished in 2.6 s, and the first claim published one row each from at least 10 employees.
