@@ -65,7 +65,7 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
-    environment:
+    environment: &app-env
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/hrsync
       SPRING_DATASOURCE_USERNAME: hrsync
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
@@ -82,6 +82,30 @@ services:
     ports:
       - "8080:8080"
     stop_grace_period: 30s
+
+  app-2:
+    profiles: ["scale"]
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment: *app-env
+    stop_grace_period: 30s
+
+  proxy:
+    profiles: ["scale"]
+    image: nginx:1.27-alpine
+    depends_on:
+      - app
+      - app-2
+    ports:
+      - "8091:8080"
+    volumes:
+      - ./load/nginx.conf:/etc/nginx/nginx.conf:ro
 
 volumes:
   hrsync-pg:

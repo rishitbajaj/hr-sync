@@ -13,7 +13,7 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-The app listens on port 8080 and Postgres on port 5432. Compose also starts a single-node Kafka in KRaft mode, creates the topic `hr-sync.employee-changes` with 6 partitions, and sets the app publisher to `kafka`. The app waits until that broker is healthy. Host consumers use `localhost:9092`. The app uses `kafka:19092` on the compose network. `GET /health` is open and returns 200 when the process is up. Set `SPRING_PROFILES_ACTIVE=demo` in `.env` before that command when you want the booking endpoints below. There is no HTTP API for offices. Insert one for the admin tenant:
+The app listens on port 8080 and Postgres on port 5432. Compose also starts a single-node Kafka in KRaft mode, creates the topic `hr-sync.employee-changes` with 6 partitions, and sets the app publisher to `kafka`. The app waits until that broker is healthy. Host consumers use `localhost:9092`. The app uses `kafka:19092` on the compose network. `GET /health` is open and returns 200 when the process is up. Set `SPRING_PROFILES_ACTIVE=demo` in `.env` before that command when you want the booking endpoints below. The `scale` profile adds a second app container and an nginx proxy on host port 8091 (`load/nginx.conf`). `docker compose up` does not start it. There is no HTTP API for offices. Insert one for the admin tenant:
 
 ```bash
 docker compose exec -T postgres psql -U hrsync -d hrsync -c \
@@ -454,9 +454,59 @@ Killing the broker during a second minute, same parameters, still on that fresh 
 
 The demo consumer on `localhost:9094` printed `read=208530 unique=208530 duplicates=0 orderViolations=0 malformed=0 stale=0`. That is the ingest minute's 98,570 messages plus this minute's 109,960. An earlier run of the same publisher, on a database that still held four `FAILED` updates from the sequential-ack kill, printed `orderViolations=4`. Those rows were replayed after later events for the same employees were already on the topic, and their payloads had no `sourceVersion`, so the consumer counted an order violation rather than a stale version. A `FAILED` row of any event type now blocks that employee's later events, so a replay cannot land after them. The fresh topic does not have that violation.
 
+### Two instances
+
+Profile `scale` starts a second app and an nginx proxy in front of both. On `load/docker-compose.yml` the second app is `hrsync-load-app-2` (host port 8095) and the proxy is `hrsync-load-proxy` (host port 8093). The root compose file builds the second app from the Dockerfile and publishes the proxy on host port 8091. `docker compose up` starts neither. `load/nginx.conf` tries the other process after a connection failure (`max_fails=1`, `fail_timeout=5s`).
+
+A fresh load volume, measured on 2026-10-31 on the same machine as the rounds above. `VUS=8`, `WARMUP=10s`, `DURATION=60s`. `./load/run.sh` posts to `http://app:8080` and scrapes only port 8092, so k6 was started directly against `http://proxy:8080`. `outbox.pending` and `outbox.publish.rate` were scraped from 8092 and 8095 about every 10s. Pending is each process's last count of `PENDING` rows, so the two scrapes can differ by one sample. The peak below is the higher of the two. The publish-rate gauge is per JVM; the table adds the two samples from the same scrape. The one-instance column is the fresh-database round publisher above.
+
+```bash
+docker compose --env-file load/.env -f load/docker-compose.yml --profile scale down -v
+docker compose --env-file load/.env -f load/docker-compose.yml --profile scale up -d
+python3 load/generate.py
+docker run --rm --network hrsync-load --env-file load/.env \
+  -e SCENARIO=ingest -e SUMMARY=scale-ingest -e BASE_URL=http://proxy:8080 \
+  -e VUS=8 -e WARMUP=10s -e DURATION=60s \
+  -v "$PWD:/work" -w /work \
+  grafana/k6 run load/k6.js
+```
+
+| | One instance | Two instances |
+| --- | --- | --- |
+| Steady req/s | 18.77 | 17.07 |
+| Events/s | 1,877 | 1,707 |
+| p50 | 412.6 ms | 468.6 ms |
+| p95 | 474.8 ms | 571.3 ms |
+| p99 | 1,733.1 ms | 1,226.4 ms |
+| Peak `outbox_pending` | 1,185 | 56,415 |
+| Highest `outbox.publish.rate` | 6,104.793 rows/s | 7,944.378 rows/s |
+| Drain to pending 0 | 0.293s | 133.905s |
+
+The minute classified 119,200 events: 89,720 applied, 11,600 stale, 11,920 duplicate, 5,960 rejected. The steady window was 1,024 requests and steady failures were 0. `processedDelta` and `outboxDelta` were both 89,720. Failed rows stayed 0, and every outbox row was `PUBLISHED`. The drain checker started at 53,408 pending and reached 0 in 133.905s, about 399 rows/s. On the scrape whose rates summed to 7,944.378, the two gauges read 3,363.443 and 4,580.935 rows/s. Both processes published on every scrape of the minute. That gauge is the last tick's rows divided by the tick's wall time. With both processes up, the sustained drain was the 133.905s figure.
+
+Both containers started together on the empty database. One process logged `bootstrap created users operator=load-operator admin=load-admin-a adminTenant=load-a`. The other stayed up, and the users table held those two rows.
+
+Killing one process during a second minute, still on that database. k6 kept posting to the proxy. `docker kill hrsync-load-app` (SIGKILL) ran 25s after k6 started.
+
+```bash
+docker run --rm --network hrsync-load --env-file load/.env \
+  -e SCENARIO=ingest -e SUMMARY=scale-kill -e BASE_URL=http://proxy:8080 \
+  -e VUS=8 -e WARMUP=10s -e DURATION=60s \
+  -v "$PWD:/work" -w /work \
+  grafana/k6 run load/k6.js &
+sleep 25
+docker kill hrsync-load-app
+```
+
+Steady window: 16.70 req/s (1,670 events/s, p50 456.8 ms, p95 542.8 ms, p99 1,928.6 ms), 1,002 requests, 4 failed. 119,400 events were attempted and 119,000 were classified: 89,570 applied, 11,580 stale, 11,900 duplicate, 5,950 rejected. `events_http_fail` was 400, from those 4 requests. `events_unknown` was 0. The database added 89,639 `processed_event` rows and 89,639 outbox rows, 69 more applies than the client was told about. Those 69 were inside the requests that returned an HTTP error. Version mismatches were 0. Version regressions were 0. Cross-tenant rows were 0. Failed stayed 0.
+
+Right after the kill the outbox was 28,465 `PENDING` and 297,214 `PUBLISHED`. When k6 finished it was 75,505 `PENDING` and 304,414 `PUBLISHED`, so the survivor published 7,200 rows while the other process was down. The drain checker then took pending from 73,905 to 0 in 18.615s, about 3,970 rows/s, and failed stayed 0. That is the single-poller rate. The strict check failed because the server applied more than the client was told. `python3 load/invariants.py check scale-kill --allow-unacked --drain-timeout 360` printed `"ok": true`. `docker start hrsync-load-app` brought the killed process back.
+
+The demo consumer on `localhost:9094` printed `read=179359 unique=179359 duplicates=0 orderViolations=0 malformed=0 stale=0`. That is the ingest minute's 89,720 messages plus this minute's 89,639 server-side applies. Each event id appears once.
+
 ## Verification
 
-`mvn -B test` on 2026-10-31, with `HR_SYNC_*`, `POSTGRES_*`, `SPRING_*`, and `COMPOSE_*` unset: 222 tests, 0 failures. Surefire time was 306.7s. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2912 peakHeapBytes=93057032 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-31, with `HR_SYNC_*`, `POSTGRES_*`, `SPRING_*`, and `COMPOSE_*` unset: 222 tests, 0 failures. Surefire time was 303.2s. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2644 peakHeapBytes=93244032 maxHeapBytes=268435456`.
 
 ## Known limitations
 
