@@ -25,12 +25,14 @@ import java.util.function.Consumer;
 @ConditionalOnProperty(name = "hr-sync.publisher", havingValue = "kafka")
 public class KafkaEventPublisher implements EventPublisher {
 
-    static final String CORRELATION_HEADER = "correlationId";
+    public static final String CORRELATION_HEADER = "correlationId";
 
     private final KafkaSettings settings;
     private final ObjectMapper objectMapper;
     private final KafkaProducer<String, String> producer;
     private volatile Consumer<ChangeNotice> beforeAck = notice -> {
+    };
+    private volatile Consumer<ChangeNotice> afterAck = notice -> {
     };
 
     public KafkaEventPublisher(KafkaSettings settings, ObjectMapper objectMapper) {
@@ -53,6 +55,7 @@ public class KafkaEventPublisher implements EventPublisher {
             var future = producer.send(record);
             beforeAck.accept(notice);
             future.get(settings.getDeliveryTimeout().toMillis(), TimeUnit.MILLISECONDS);
+            afterAck.accept(notice);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new KafkaPublishException("kafka publish interrupted");
@@ -69,6 +72,11 @@ public class KafkaEventPublisher implements EventPublisher {
     public void setBeforeAck(Consumer<ChangeNotice> beforeAck) {
         this.beforeAck = beforeAck == null ? notice -> {
         } : beforeAck;
+    }
+
+    public void setAfterAck(Consumer<ChangeNotice> afterAck) {
+        this.afterAck = afterAck == null ? notice -> {
+        } : afterAck;
     }
 
     @PreDestroy
