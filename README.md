@@ -160,7 +160,7 @@ While the app is still starting, `GET /health` can reset the connection for a fe
 
 ## Assumptions
 
-One app process, one Postgres, and one Kafka broker. Offices exist before an HR event names them. The admin acts only in the bootstrap tenant. Tokens are HS256 JWTs that last 15 minutes. Bookings live in the same database, schema `booking_svc`, and each cancel commits on its own. The outbox is still the source of truth. Compose publishes to Kafka after the in-process deactivation effect. Tests use the logging publisher unless they start Kafka. The age gauge has one-second resolution.
+The default Compose file runs one app process, one Postgres, and one Kafka broker. The `scale` profile runs a second app process against that same database and broker. Offices exist before an HR event names them. The admin acts only in the bootstrap tenant. Tokens are HS256 JWTs that last 15 minutes. Bookings live in the same database, schema `booking_svc`, and each cancel commits on its own. The outbox is still the source of truth. Compose publishes to Kafka after the in-process deactivation effect. Tests use the logging publisher unless they start Kafka. The age gauge has one-second resolution.
 
 ## API
 
@@ -178,7 +178,7 @@ One app process, one Postgres, and one Kafka broker. Offices exist before an HR 
 | POST | `/outbox/{id}/replay?tenantId=` | operator | failed row back to pending |
 | POST | `/outbox/{id}/discard?tenantId=` | operator | body `{"reason":"..."}`, failed row only |
 | GET | `/actuator/prometheus` | operator | `Accept: text/plain` |
-| POST, GET | `/demo/**` | anyone, demo profile only | trips, bookings, failure injection. `GET /demo/openapi` is the OpenAPI document and `GET /demo/swagger-ui` is the UI. Both are absent when the demo profile is off. A copy of the document is `docs/openapi.json` |
+| POST, GET | `/demo/**` | anyone, demo profile only | trips, bookings, failure injection. `GET /demo/openapi` is the OpenAPI document and `GET /demo/swagger-ui` is the UI. Both are absent when the demo profile is off. The committed copy is [`docs/openapi.json`](docs/openapi.json) |
 
 A new reconciliation run marks every older `HALTED` run for that tenant `SUPERSEDED`. Approving that older run deactivates nobody. Approving the latest halted run still applies once. A halted run for another tenant stays `HALTED`.
 
@@ -208,9 +208,13 @@ mvn -B test
 
 That runs the tests and then the reconciliation benchmark in a forked JVM with `-Xmx256m`. The benchmark is `ReconciliationBenchmarkTest`. It is excluded from the default Surefire execution and included again as execution `reconciliation-benchmark`.
 
-GitHub Actions runs `mvn -B verify` on every push and pull request with Temurin 21 and a Maven cache. The runner's Docker is what Testcontainers uses. Surefire reports are uploaded as the `surefire-reports` artifact. The workflow sets dummy `HR_SYNC_JWT_SECRET` and database password values. It does not read a local `.env`.
+GitHub Actions runs `mvn -B verify` on every push and pull request with Temurin 21 and a Maven cache. The runner's Docker is what Testcontainers uses. Surefire reports are uploaded as the `surefire-reports` artifact. The workflow sets dummy `HR_SYNC_JWT_SECRET` and database password values. It does not read a local `.env`. CI passes `-Djqwik.tries.default=200`.
 
-Load tests use `load/docker-compose.yml` (ports 5442 and 8092) and are described in `load/README.md`.
+`EmployeeChangePropertiesTest` checks `EmployeeChangeApplier` with no Spring and no database. jqwik generates create, update, deactivate, and transport events, including shuffled order and duplicates. The seed is `424242`. A local run uses 1,000 tries. The properties are in `docs/DESIGN.md`.
+
+On SIGTERM the process stops claiming new outbox rows, finishes the in-flight round, and Tomcat finishes in-flight HTTP. `server.shutdown` is `graceful`. The lifecycle timeout, the scheduler await, and `hr-sync.outbox.shutdown-timeout` are 20s. Compose `stop_grace_period` is 30s on the app. `docs/DEMO.md` records `docker stop` of the load app during ingest. `docker kill` is SIGKILL.
+
+Load tests use `load/docker-compose.yml` (ports 5442 and 8092) and are described in `load/README.md`. The `scale` profile and its numbers are in the load section below.
 
 `python3 scripts/generate-exports.py` writes a 200,000-row export and a 120,000-row prefix under `scripts/out/`. `scripts/demo.sh` runs the walkthrough above and prints each response. It reads `.env` and talks to `BASE_URL` (default `http://localhost:8080`). `docs/DEMO.md` is the timed version of that walkthrough, including the kill and the paused database.
 
@@ -506,7 +510,7 @@ The demo consumer on `localhost:9094` printed `read=179359 unique=179359 duplica
 
 ## Verification
 
-`mvn -B test` on 2026-10-31, with `HR_SYNC_*`, `POSTGRES_*`, `SPRING_*`, and `COMPOSE_*` unset: 222 tests, 0 failures. Surefire time was 303.2s. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2644 peakHeapBytes=93244032 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-31, with `HR_SYNC_*`, `POSTGRES_*`, `SPRING_*`, and `COMPOSE_*` unset: 222 tests, 0 failures. Surefire time was 275.7s. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2360 peakHeapBytes=92136960 maxHeapBytes=268435456`.
 
 ## Known limitations
 
