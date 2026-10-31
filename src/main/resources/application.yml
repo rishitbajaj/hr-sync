@@ -67,6 +67,8 @@ hr-sync:
     linger: 1ms
     batch-size: 65536
     compression: lz4
+    circuit-base: 200ms
+    circuit-max: 30s
   outbox:
     poll-interval: 1s
     batch-size: 400

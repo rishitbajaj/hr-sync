@@ -27,6 +27,10 @@ public class KafkaSettings {
 
     private String compression = "lz4";
 
+    private Duration circuitBase = Duration.ofMillis(200);
+
+    private Duration circuitMax = Duration.ofSeconds(30);
+
     public String getBootstrapServers() {
         return bootstrapServers;
     }
@@ -97,6 +101,22 @@ public class KafkaSettings {
 
     public void setLinger(Duration linger) {
         this.linger = linger;
+    }
+
+    public Duration getCircuitBase() {
+        return circuitBase;
+    }
+
+    public void setCircuitBase(Duration circuitBase) {
+        this.circuitBase = circuitBase;
+    }
+
+    public Duration getCircuitMax() {
+        return circuitMax;
+    }
+
+    public void setCircuitMax(Duration circuitMax) {
+        this.circuitMax = circuitMax;
     }
 
     public String getCompression() {

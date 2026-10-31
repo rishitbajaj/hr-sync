@@ -15,6 +15,7 @@ import com.moveinsync.hrsync.service.CompositeEventPublisher;
 import com.moveinsync.hrsync.service.DeactivationEventConsumer;
 import com.moveinsync.hrsync.service.LoggingEventPublisher;
 import com.moveinsync.hrsync.service.OutboxPoller;
+import com.moveinsync.hrsync.service.PublishCircuit;
 import com.moveinsync.hrsync.service.OutboxPublishGuard;
 import com.moveinsync.hrsync.service.PersistGate;
 import com.moveinsync.hrsync.service.SyncEventService;
@@ -90,6 +91,9 @@ class OutboxPollerTest {
 
     @Autowired
     private OutboxSettings settings;
+
+    @Autowired
+    private PublishCircuit circuit;
 
     @Autowired
     private PlatformTransactionManager transactionManager;
@@ -708,7 +712,8 @@ class OutboxPollerTest {
                 settings,
                 objectMapper,
                 clock,
-                new com.moveinsync.hrsync.metrics.SyncMeters(new io.micrometer.core.instrument.simple.SimpleMeterRegistry())
+                new com.moveinsync.hrsync.metrics.SyncMeters(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                circuit
         );
     }
 

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.moveinsync.hrsync.auth.TestAccounts;
 import com.moveinsync.hrsync.booking.MockBookingService;
+import com.moveinsync.hrsync.config.KafkaSettings;
 import com.moveinsync.hrsync.config.OutboxSettings;
 import com.moveinsync.hrsync.domain.EmployeeFields;
 import com.moveinsync.hrsync.domain.EventType;
@@ -19,6 +20,7 @@ import com.moveinsync.hrsync.service.KafkaEventPublisher;
 import com.moveinsync.hrsync.service.KafkaPublishException;
 import com.moveinsync.hrsync.service.OutboxPoller;
 import com.moveinsync.hrsync.service.OutboxPublishGuard;
+import com.moveinsync.hrsync.service.PublishCircuit;
 import com.moveinsync.hrsync.service.SyncEventService;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.admin.AdminClient;
@@ -135,6 +137,12 @@ class KafkaOutboxPublishTest {
     private OutboxSettings settings;
 
     @Autowired
+    private KafkaSettings kafkaSettings;
+
+    @Autowired
+    private PublishCircuit circuit;
+
+    @Autowired
     private PlatformTransactionManager transactionManager;
 
     @Autowired
@@ -180,6 +188,9 @@ class KafkaOutboxPublishTest {
         kafkaPublisher.setAfterAck(null);
         publishGuard.setBeforePublish(null);
         bookings.failNext(0);
+        kafkaSettings.setCircuitBase(Duration.ZERO);
+        kafkaSettings.setCircuitMax(Duration.ZERO);
+        circuit.reset();
         drain();
         bookings.reset();
     }
@@ -190,6 +201,9 @@ class KafkaOutboxPublishTest {
         kafkaPublisher.setAfterAck(null);
         publishGuard.setBeforePublish(null);
         bookings.failNext(0);
+        kafkaSettings.setCircuitBase(Duration.ZERO);
+        kafkaSettings.setCircuitMax(Duration.ZERO);
+        circuit.reset();
         unpauseKafka();
     }
 
@@ -298,6 +312,92 @@ class KafkaOutboxPublishTest {
         assertThat(log.orderViolations()).isZero();
         assertThat(log.unique()).isEqualTo(2);
         assertThat(sequences).isSortedAccordingTo(Comparator.naturalOrder());
+    }
+
+    @Test
+    void brokerOutageLongerThanTheAttemptWindowLeavesZeroFailedRows() throws Exception {
+        String tenant = "kafka-outage";
+        saveOffice(tenant);
+        pauseKafka();
+        try {
+            assertThat(postEvents(tenant, "emp-1", 1, "CREATE", fields("Ada")).getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(postEvents(tenant, "emp-1", 2, "UPDATE", "{\"name\":\"Ada Two\"}").getStatusCode())
+                    .isEqualTo(HttpStatus.OK);
+            long pendingBefore = pending(tenant);
+            for (int attempt = 0; attempt < settings.getMaxAttempts() + 3; attempt++) {
+                assertThat(poller.poll()).isZero();
+            }
+            assertThat(postEvents(tenant, "emp-2", 1, "CREATE", fields("Bea")).getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(pending(tenant)).isGreaterThan(pendingBefore);
+            assertThat(failed(tenant)).isZero();
+            assertThat(attempts(tenant, "emp-1")).isZero();
+            assertThat(attemptsOf(outboxIds(tenant, "emp-2").get(0))).isZero();
+            assertThat(statuses(tenant, "emp-1")).containsExactly("PENDING", "PENDING");
+        } finally {
+            unpauseKafka();
+        }
+
+        drain();
+        assertThat(failed(tenant)).isZero();
+        assertThat(pending(tenant)).isZero();
+        EmployeeChangeLog log = new EmployeeChangeLog();
+        for (ConsumerRecord<String, String> record : messagesFor(tenant)) {
+            long eventId = objectMapper.readTree(record.value()).get("eventId").asLong();
+            log.accept(eventId, record.key(), eventId);
+        }
+        assertThat(log.orderViolations()).isZero();
+        assertThat(log.unique()).isEqualTo(3);
+    }
+
+    @Test
+    void permanentPublishErrorStillEndsFailed() throws Exception {
+        String tenant = "kafka-permanent";
+        saveOffice(tenant);
+        apply(create(tenant, "emp-1", 1, "Ada"));
+        long eventId = outboxIds(tenant, "emp-1").get(0);
+        kafkaPublisher.setBeforeAck(notice -> {
+            throw new org.apache.kafka.common.errors.RecordTooLargeException("too large");
+        });
+        double before = registry.counter("kafka.publish.permanent").count();
+
+        for (int attempt = 0; attempt < settings.getMaxAttempts(); attempt++) {
+            assertThat(poller.poll()).isZero();
+        }
+
+        assertThat(statusOf(eventId)).isEqualTo("FAILED");
+        assertThat(attemptsOf(eventId)).isEqualTo(settings.getMaxAttempts());
+        assertThat(circuit.state()).isEqualTo(PublishCircuit.CLOSED);
+        assertThat(registry.counter("kafka.publish.permanent").count()).isGreaterThanOrEqualTo(before + settings.getMaxAttempts());
+        assertThat(statusOf(eventId)).isEqualTo("FAILED");
+    }
+
+    @Test
+    void openCircuitDoesNotThrashTheBroker() throws Exception {
+        String tenant = "kafka-circuit";
+        saveOffice(tenant);
+        apply(create(tenant, "emp-1", 1, "Ada"));
+        kafkaSettings.setCircuitBase(Duration.ofSeconds(30));
+        kafkaSettings.setCircuitMax(Duration.ofSeconds(30));
+        pauseKafka();
+        try {
+            assertThat(poller.poll()).isZero();
+            assertThat(circuit.state()).isEqualTo(PublishCircuit.OPEN);
+            double transientFailures = registry.counter("kafka.publish.transient").count();
+            double sendFailures = registry.counter("kafka.publish.failures").count();
+            for (int extra = 0; extra < 10; extra++) {
+                assertThat(poller.poll()).isZero();
+            }
+            assertThat(registry.counter("kafka.publish.transient").count()).isEqualTo(transientFailures);
+            assertThat(registry.counter("kafka.publish.failures").count()).isEqualTo(sendFailures);
+            assertThat(attempts(tenant, "emp-1")).isZero();
+            assertThat(statusOf(outboxIds(tenant, "emp-1").get(0))).isEqualTo("PENDING");
+            assertThat(registry.get("kafka.circuit.state").gauge().value()).isEqualTo(PublishCircuit.OPEN);
+        } finally {
+            unpauseKafka();
+            kafkaSettings.setCircuitBase(Duration.ZERO);
+            kafkaSettings.setCircuitMax(Duration.ZERO);
+            circuit.reset();
+        }
     }
 
     @Test
@@ -692,7 +792,8 @@ class KafkaOutboxPublishTest {
                 settings,
                 objectMapper,
                 clock,
-                new com.moveinsync.hrsync.metrics.SyncMeters(new io.micrometer.core.instrument.simple.SimpleMeterRegistry())
+                new com.moveinsync.hrsync.metrics.SyncMeters(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                circuit
         );
     }
 
@@ -825,6 +926,15 @@ class KafkaOutboxPublishTest {
         Long count = jdbc.queryForObject(
                 "select count(*) from outbox where status = 'PENDING'",
                 Long.class
+        );
+        return count == null ? 0 : count;
+    }
+
+    private long failed(String tenant) {
+        Long count = jdbc.queryForObject(
+                "select count(*) from outbox where tenant_id = ? and status = 'FAILED'",
+                Long.class,
+                tenant
         );
         return count == null ? 0 : count;
     }

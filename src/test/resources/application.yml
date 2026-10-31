@@ -22,6 +22,9 @@ management:
 
 hr-sync:
   publisher: logging
+  kafka:
+    circuit-base: 0ms
+    circuit-max: 0ms
   auth:
     jwt-secret: 0123456789abcdef0123456789abcdef
   metrics:

@@ -112,6 +112,7 @@ public class OutboxPoller {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final SyncMeters meters;
+    private final PublishCircuit circuit;
     private final ExecutorService publishers;
 
     public OutboxPoller(
@@ -122,7 +123,8 @@ public class OutboxPoller {
             OutboxSettings settings,
             ObjectMapper objectMapper,
             Clock clock,
-            SyncMeters meters
+            SyncMeters meters,
+            PublishCircuit circuit
     ) {
         this.jdbc = jdbc;
         this.transactions = new TransactionTemplate(transactionManager);
@@ -132,6 +134,7 @@ public class OutboxPoller {
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.meters = meters;
+        this.circuit = circuit;
         int threads = Math.max(1, settings.getPublisherThreads());
         this.publishers = threads == 1 ? null : Executors.newFixedThreadPool(threads, runnable -> {
             Thread thread = new Thread(runnable, "outbox-publish");
@@ -181,13 +184,19 @@ public class OutboxPoller {
     }
 
     private Batch claimAndPublish(int batchSize) {
-        int limit = Math.max(1, batchSize);
+        int limit = circuit.claimLimit(Math.max(1, batchSize));
+        if (limit <= 0) {
+            return new Batch(0, false);
+        }
         List<Head> heads = findHeads(limit);
         int claimed = 0;
         int delivered = 0;
         boolean more = false;
         if (!heads.isEmpty()) {
             int parallelism = publishers == null ? 1 : Math.max(1, settings.getPublisherThreads());
+            if (limit == 1) {
+                parallelism = 1;
+            }
             int slots = Math.min(parallelism, heads.size());
             int share = Math.max(1, (limit + slots - 1) / slots);
             List<List<Head>> groups = new ArrayList<>();
@@ -334,7 +343,8 @@ public class OutboxPoller {
         }
         boolean[] skip = new boolean[runs.size()];
         int delivered = 0;
-        for (int round = 0; round < rounds; round++) {
+        boolean brokerDown = false;
+        for (int round = 0; round < rounds && !brokerDown; round++) {
             List<Claimed> slice = new ArrayList<>();
             List<Integer> owners = new ArrayList<>();
             for (int index = 0; index < runs.size(); index++) {
@@ -371,6 +381,14 @@ public class OutboxPoller {
                 RuntimeException failure = result == null
                         ? new IllegalStateException("publish round dropped an event")
                         : result.failure();
+                if (PublishFailures.isTransient(failure)) {
+                    meters.publishTransient();
+                    brokerDown = true;
+                    continue;
+                }
+                if (PublishFailures.isKafka(failure)) {
+                    meters.publishPermanent();
+                }
                 recordFailure(claimedRow, failure);
                 meters.outboxRetried();
                 skip[owners.get(index)] = true;
@@ -378,6 +396,12 @@ public class OutboxPoller {
             for (Map.Entry<String, List<Long>> entry : ackedByTenant.entrySet()) {
                 markPublished(entry.getKey(), entry.getValue());
             }
+            if (brokerDown) {
+                circuit.transientFailure();
+            }
+        }
+        if (!brokerDown) {
+            circuit.success();
         }
         return delivered;
     }

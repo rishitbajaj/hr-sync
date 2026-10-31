@@ -12,6 +12,8 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.DoubleSupplier;
+import java.util.function.IntSupplier;
 
 @Component
 public class SyncMeters {
@@ -96,6 +98,28 @@ public class SyncMeters {
 
     public void kafkaFailed() {
         registry.counter("kafka.publish.failures").increment();
+    }
+
+    public void publishTransient() {
+        registry.counter("kafka.publish.transient").increment();
+    }
+
+    public void publishPermanent() {
+        registry.counter("kafka.publish.permanent").increment();
+    }
+
+    public void circuitState(IntSupplier state) {
+        Gauge.builder("kafka.circuit.state", state, IntSupplier::getAsInt).register(registry);
+    }
+
+    public void circuitOpenSeconds(DoubleSupplier seconds) {
+        Gauge.builder("kafka.circuit.open.seconds", seconds, DoubleSupplier::getAsDouble).register(registry);
+    }
+
+    public void circuitUnavailable(double seconds) {
+        if (seconds > 0) {
+            registry.counter("kafka.circuit.unavailable.seconds").increment(seconds);
+        }
     }
 
     public void bookingsCancelled(int count) {
