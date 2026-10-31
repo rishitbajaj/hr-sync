@@ -502,11 +502,14 @@ class KafkaOutboxPublishTest {
                 "employeeId",
                 "eventType",
                 "changedFields",
+                "sourceVersion",
                 "sequence",
                 "occurredAt",
                 "schemaVersion"
         );
         assertThat(json.get("schemaVersion").asInt()).isEqualTo(1);
+        assertThat(json.get("sourceVersion").asLong()).isEqualTo(1);
+        assertThat(json.get("sequence").asLong()).isEqualTo(json.get("eventId").asLong());
         assertThat(json.get("changedFields").toString()).doesNotContain(SECRET_NAME).doesNotContain(SECRET_EMAIL);
         String wire = record.value() + " " + headerText(record);
         assertThat(wire)

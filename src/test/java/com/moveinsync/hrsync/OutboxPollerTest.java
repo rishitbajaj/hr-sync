@@ -14,6 +14,7 @@ import com.moveinsync.hrsync.repo.OfficeRepository;
 import com.moveinsync.hrsync.service.CompositeEventPublisher;
 import com.moveinsync.hrsync.service.DeactivationEventConsumer;
 import com.moveinsync.hrsync.service.LoggingEventPublisher;
+import com.moveinsync.hrsync.service.OutboxOperatorService;
 import com.moveinsync.hrsync.service.OutboxPoller;
 import com.moveinsync.hrsync.service.PublishCircuit;
 import com.moveinsync.hrsync.service.OutboxPublishGuard;
@@ -82,6 +83,9 @@ class OutboxPollerTest {
 
     @Autowired
     private OutboxPoller poller;
+
+    @Autowired
+    private OutboxOperatorService outboxOperator;
 
     @Autowired
     private PersistGate persistGate;
@@ -552,7 +556,7 @@ class OutboxPollerTest {
     }
 
     @Test
-    void exhaustedPublishEndsFailedWithoutBlockingOtherEmployees() {
+    void exhaustedPublishBlocksThatEmployeeUntilReplay() {
         apply(create("emp-stuck", 1, "Ada"));
         publisher.setListener(notice -> {
             throw new IllegalStateException("publish down");
@@ -566,14 +570,33 @@ class OutboxPollerTest {
         assertThat(poller.poll()).isZero();
         assertThat(outboxStatus("emp-stuck")).isEqualTo("FAILED");
 
+        publisher.clear();
         publisher.setListener(null);
         apply(create("emp-ok", 1, "Bea"));
         apply(rename("emp-stuck", 2, "Ada Two"));
-        assertThat(poller.poll()).isEqualTo(2);
+        long failedId = jdbc.queryForObject(
+                "select min(id) from outbox where aggregate_id = ?",
+                Long.class,
+                "emp-stuck"
+        );
+        long laterId = jdbc.queryForObject(
+                "select max(id) from outbox where aggregate_id = ?",
+                Long.class,
+                "emp-stuck"
+        );
+        assertThat(poller.poll()).isEqualTo(1);
 
-        assertThat(statuses("emp-stuck")).containsExactly("FAILED", "PUBLISHED");
+        assertThat(statuses("emp-stuck")).containsExactly("FAILED", "PENDING");
         assertThat(statuses("emp-ok")).containsExactly("PUBLISHED");
-        assertThat(unpublished("emp-ok")).isZero();
+        assertThat(publisher.published()).extracting(ChangeNotice::eventId).doesNotContain(laterId);
+
+        outboxOperator.replay(failedId, SampleHrBatch.TENANT);
+        assertThat(poller.poll()).isEqualTo(2);
+        assertThat(statuses("emp-stuck")).containsExactly("PUBLISHED", "PUBLISHED");
+        assertThat(publisher.published().stream()
+                .filter(notice -> notice.aggregateId().equals("emp-stuck"))
+                .map(ChangeNotice::eventId)
+                .toList()).containsExactly(failedId, laterId);
     }
 
     @Test

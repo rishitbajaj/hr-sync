@@ -20,7 +20,7 @@ docker compose exec -T postgres psql -U hrsync -d hrsync -c \
 
 Run that from a shell that has sourced `.env`, or substitute the tenant yourself.
 
-An applied change is one Kafka message. The key is `tenantId:employeeId`, so one employee's events stay in one partition. The JSON value is `eventId`, `tenantId`, `employeeId`, `eventType`, `changedFields` (names only), `sequence` (the outbox id), `occurredAt`, and `schemaVersion`. The header is `correlationId` when the request had one. The message has no phone, email, name, or pickup point. A stale, duplicate, or rejected change produces none. The row is marked published only after the broker acks. Ingest does not wait on Kafka. If the broker is down, the batch still returns 200 and the outbox stays pending until the broker is back.
+An applied change is one Kafka message. The key is `tenantId:employeeId`, so one employee's events stay in one partition. The JSON value is `eventId`, `tenantId`, `employeeId`, `eventType`, `changedFields` (names only), `sourceVersion`, `sequence` (the outbox id), `occurredAt`, and `schemaVersion`. The header is `correlationId` when the request had one. The message has no phone, email, name, or pickup point. A stale, duplicate, or rejected change produces none. The row is marked published only after the broker acks. Ingest does not wait on Kafka. If the broker is down, the batch still returns 200 and the outbox stays pending until the broker is back.
 
 Read the topic from the host, drop duplicate event ids, and check per-employee order. The script prints counts only.
 
@@ -28,7 +28,7 @@ Read the topic from the host, drop duplicate event ids, and check per-employee o
 ./scripts/kafka-demo-consumer.sh
 ```
 
-`HR_SYNC_KAFKA_BOOTSTRAP_SERVERS` defaults to `localhost:9092` and `HR_SYNC_KAFKA_TOPIC` to `hr-sync.employee-changes`. The line looks like `read=8 unique=8 duplicates=0 orderViolations=0 malformed=0`. A broken order or an unreadable record exits 1.
+`HR_SYNC_KAFKA_BOOTSTRAP_SERVERS` defaults to `localhost:9092` and `HR_SYNC_KAFKA_TOPIC` to `hr-sync.employee-changes`. The line looks like `read=8 unique=8 duplicates=0 orderViolations=0 malformed=0 stale=0`. A message whose `sourceVersion` is older than the highest version already accepted for that key, and whose `sequence` is also older, is counted in `stale` and dropped. A second copy of the same `eventId` is a duplicate. A broken order or an unreadable record exits 1. A stale count does not. A `FAILED` outbox row of any event type blocks later events for that employee until an operator replays or discards it.
 
 ## Walkthrough
 
@@ -431,7 +431,7 @@ The poller blocks an employee when an earlier `FAILED` row is an `EMPLOYEE_DEACT
 
 ## Verification
 
-`mvn -B test` on 2026-10-31: 203 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2567 peakHeapBytes=87182208 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-31: 210 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2395 peakHeapBytes=90327672 maxHeapBytes=268435456`.
 
 ## Known limitations
 

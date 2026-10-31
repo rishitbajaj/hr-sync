@@ -74,7 +74,6 @@ public class OutboxPoller {
                   and blocked.aggregate_id = heads.aggregate_id
                   and blocked.id < heads.id
                   and blocked.status = 'FAILED'
-                  and blocked.event_type = 'EMPLOYEE_DEACTIVATED'
               )
             order by id
             """;
@@ -100,7 +99,7 @@ public class OutboxPoller {
             select 1
             from outbox
             where tenant_id = ? and aggregate_id = ? and id < ?
-              and status = 'FAILED' and event_type = 'EMPLOYEE_DEACTIVATED'
+              and status = 'FAILED'
             limit 1
             """;
 
@@ -546,6 +545,7 @@ public class OutboxPoller {
                     rs.getString("aggregate_id"),
                     rs.getString("event_type"),
                     changedFields,
+                    payload.path("sourceVersion").asLong(0),
                     rs.getTimestamp("created_at").toInstant(),
                     rs.getString("correlation_id")
             );

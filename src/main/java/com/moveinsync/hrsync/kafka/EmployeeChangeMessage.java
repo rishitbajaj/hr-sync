@@ -13,6 +13,7 @@ public record EmployeeChangeMessage(
         String employeeId,
         String eventType,
         List<String> changedFields,
+        long sourceVersion,
         long sequence,
         Instant occurredAt,
         int schemaVersion
@@ -26,6 +27,7 @@ public record EmployeeChangeMessage(
                 notice.aggregateId(),
                 notice.eventType(),
                 notice.changedFields(),
+                notice.sourceVersion(),
                 notice.eventId(),
                 notice.createdAt(),
                 SCHEMA_VERSION

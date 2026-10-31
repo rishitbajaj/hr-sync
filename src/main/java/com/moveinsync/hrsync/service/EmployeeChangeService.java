@@ -239,7 +239,7 @@ public class EmployeeChangeService implements ChangeStore {
             if (updated == 0) {
                 return false;
             }
-            insertDeactivateNotice(tenantId, employeeId);
+            insertDeactivateNotice(tenantId, employeeId, hrVersion);
             return true;
         });
         if (Boolean.TRUE.equals(deactivated)) {
@@ -249,9 +249,10 @@ public class EmployeeChangeService implements ChangeStore {
         return false;
     }
 
-    private void insertDeactivateNotice(String tenantId, String employeeId) {
+    private void insertDeactivateNotice(String tenantId, String employeeId, long sourceVersion) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("employeeId", employeeId);
+        payload.put("sourceVersion", sourceVersion);
         payload.put("changedFields", List.of("status"));
         String json;
         try {
@@ -274,11 +275,12 @@ public class EmployeeChangeService implements ChangeStore {
 
     private void insertOutbox(ChangeCommand command, HrEmployee before, HrEmployee after) {
         if (command.type() == EventType.DEACTIVATE) {
-            insertDeactivateNotice(command.tenantId(), command.employeeId());
+            insertDeactivateNotice(command.tenantId(), command.employeeId(), command.version());
             return;
         }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("employeeId", command.employeeId());
+        payload.put("sourceVersion", command.version());
         payload.put("changedFields", ChangedFields.between(before, after, command.channel()));
         String json;
         try {

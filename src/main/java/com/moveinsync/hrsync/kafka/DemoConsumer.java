@@ -72,6 +72,7 @@ public final class DemoConsumer {
             JsonNode body = objectMapper.readTree(record.value());
             long eventId = body.path("eventId").asLong();
             long sequence = body.path("sequence").asLong(eventId);
+            long sourceVersion = body.path("sourceVersion").asLong(0);
             String key = record.key();
             if (key == null || key.isBlank()) {
                 key = body.path("tenantId").asText() + ":" + body.path("employeeId").asText();
@@ -80,7 +81,7 @@ public final class DemoConsumer {
                 log.markMalformed();
                 return;
             }
-            log.accept(eventId, key, sequence);
+            log.accept(eventId, key, sequence, sourceVersion);
         } catch (Exception exception) {
             log.markMalformed();
         }

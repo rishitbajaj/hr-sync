@@ -9,6 +9,7 @@ public record ChangeNotice(
         String aggregateId,
         String eventType,
         List<String> changedFields,
+        long sourceVersion,
         Instant createdAt,
         String correlationId
 ) {

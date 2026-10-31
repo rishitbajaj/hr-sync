@@ -50,7 +50,7 @@ sequenceDiagram
   end
 ```
 
-The cutoff is the outbox row's `created_at`, so a retry uses the same instant. A later create does not restore cancelled bookings. A `FAILED` `EMPLOYEE_DEACTIVATED` row blocks later rows for that employee until an operator replays or discards it.
+The cutoff is the outbox row's `created_at`, so a retry uses the same instant. A later create does not restore cancelled bookings. Any `FAILED` row blocks later rows for that employee until an operator replays or discards it. Other employees continue. The Kafka message carries `sourceVersion` from the outbox payload and `sequence` (the outbox id). The demo consumer drops a message whose `sourceVersion` is older than the highest version it has accepted for that key when its `sequence` is also older, and counts those as `stale`. A second copy of the same `eventId` is a duplicate, not a stale version.
 
 ## Reconciliation
 
@@ -105,7 +105,7 @@ HR may write name, email, phone, manager, office, shift, `hr_version`, and statu
 
 ## Choices
 
-Consistency over availability. A change is not acknowledged until its transaction commits, and a later event for an employee waits while an earlier one is unpublished or a deactivation for them is `FAILED`. Availability is the 503: the caller retries, and idempotency makes the retry safe. Latency is spent on purpose. Each event is its own transaction, so a batch of 100 holds one pool connection for the whole request. The employee cache can be 10 seconds stale on another node, and an office can be 60 seconds stale. Login lockouts are in memory. Logging mode stays in this process. Kafka mode publishes after the effect and still commits the outbox here. A broker outage does not fail ingest. Reconciliation deactivation does not advance `hr_version` or write `processed_event`; the guard is the version captured at diff time.
+Consistency over availability. A change is not acknowledged until its transaction commits, and a later event for an employee waits while an earlier one is unpublished or `FAILED`. Availability is the 503: the caller retries, and idempotency makes the retry safe. Latency is spent on purpose. Each event is its own transaction, so a batch of 100 holds one pool connection for the whole request. The employee cache can be 10 seconds stale on another node, and an office can be 60 seconds stale. Login lockouts are in memory. Logging mode stays in this process. Kafka mode publishes after the effect and still commits the outbox here. A broker outage does not fail ingest. Reconciliation deactivation does not advance `hr_version` or write `processed_event`; the guard is the version captured at diff time.
 
 A later version can move the deactivation effect to its own consumer of `hr-sync.employee-changes`. The outbox would only publish, and that consumer would dedupe on `eventId` the way the demo consumer does. This version keeps the effect in the poller, before the send, so a booking cancel does not wait on a second service.
 

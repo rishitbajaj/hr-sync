@@ -21,5 +21,22 @@ class EmployeeChangeLogTest {
         assertThat(log.duplicates()).isEqualTo(1);
         assertThat(log.orderViolations()).isEqualTo(1);
         assertThat(log.summary()).doesNotContain("phone").doesNotContain("@");
+        assertThat(log.stale()).isZero();
+    }
+
+    @Test
+    void anOlderSourceVersionIsDiscardedAndARedeliveryIsNotStale() {
+        EmployeeChangeLog log = new EmployeeChangeLog();
+        log.accept(10, "acme:emp-1", 10, 5);
+        log.accept(10, "acme:emp-1", 10, 5);
+        log.accept(11, "acme:emp-1", 8, 2);
+        log.accept(12, "acme:emp-2", 12, 1);
+        log.accept(13, "acme:emp-1", 13, 1);
+
+        assertThat(log.duplicates()).isEqualTo(1);
+        assertThat(log.stale()).isEqualTo(1);
+        assertThat(log.orderViolations()).isZero();
+        assertThat(log.unique()).isEqualTo(4);
+        assertThat(log.summary()).contains("stale=1");
     }
 }
