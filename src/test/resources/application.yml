@@ -21,6 +21,7 @@ management:
           - prometheus
 
 hr-sync:
+  publisher: logging
   auth:
     jwt-secret: 0123456789abcdef0123456789abcdef
   metrics:

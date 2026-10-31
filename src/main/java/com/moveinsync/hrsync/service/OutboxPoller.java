@@ -104,7 +104,6 @@ public class OutboxPoller {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
-    private final DeactivationEventConsumer deactivations;
     private final EventPublisher publisher;
     private final OutboxPublishGuard guard;
     private final OutboxSettings settings;
@@ -116,7 +115,6 @@ public class OutboxPoller {
     public OutboxPoller(
             JdbcTemplate jdbc,
             PlatformTransactionManager transactionManager,
-            DeactivationEventConsumer deactivations,
             EventPublisher publisher,
             OutboxPublishGuard guard,
             OutboxSettings settings,
@@ -126,7 +124,6 @@ public class OutboxPoller {
     ) {
         this.jdbc = jdbc;
         this.transactions = new TransactionTemplate(transactionManager);
-        this.deactivations = deactivations;
         this.publisher = publisher;
         this.guard = guard;
         this.settings = settings;
@@ -299,7 +296,6 @@ public class OutboxPoller {
                     .and("employeeId", claimedRow.notice().aggregateId())) {
                 guard.beforePublish(claimedRow.notice());
                 try {
-                    deactivations.handle(claimedRow.notice());
                     publisher.publish(claimedRow.notice());
                 } catch (RuntimeException exception) {
                     recordFailure(claimedRow, exception);
@@ -453,7 +449,8 @@ public class OutboxPoller {
                     rs.getString("aggregate_id"),
                     rs.getString("event_type"),
                     changedFields,
-                    rs.getTimestamp("created_at").toInstant()
+                    rs.getTimestamp("created_at").toInstant(),
+                    rs.getString("correlation_id")
             );
         } catch (Exception exception) {
             throw new SQLException("Unreadable outbox payload for id " + rs.getLong("id"), exception);

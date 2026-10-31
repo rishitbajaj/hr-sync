@@ -11,6 +11,7 @@ import com.moveinsync.hrsync.domain.ReasonCode;
 import com.moveinsync.hrsync.domain.SyncEvent;
 import com.moveinsync.hrsync.repo.OfficeEntity;
 import com.moveinsync.hrsync.repo.OfficeRepository;
+import com.moveinsync.hrsync.service.CompositeEventPublisher;
 import com.moveinsync.hrsync.service.DeactivationEventConsumer;
 import com.moveinsync.hrsync.service.LoggingEventPublisher;
 import com.moveinsync.hrsync.service.OutboxPoller;
@@ -699,8 +700,7 @@ class OutboxPollerTest {
         return new OutboxPoller(
                 jdbc,
                 transactionManager,
-                deactivations,
-                publisher,
+                new CompositeEventPublisher(deactivations, publisher),
                 publishGuard,
                 settings,
                 objectMapper,

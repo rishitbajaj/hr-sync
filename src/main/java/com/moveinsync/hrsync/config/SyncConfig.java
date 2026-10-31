@@ -22,6 +22,7 @@ import java.time.Clock;
         MetricsSettings.class,
         IngestLimits.class,
         OutboxSettings.class,
+        KafkaSettings.class,
         ReconciliationSettings.class,
         RetentionSettings.class
 })

@@ -1,6 +1,8 @@
 # Design
 
-One process serves HTTP, applies roster changes, reconciles a nightly export, and publishes the outbox. Postgres is the source of truth. There is no broker.
+One process serves HTTP, applies roster changes, reconciles a nightly export, and publishes the outbox. Postgres is the source of truth. The outbox stays the source of truth for what must be delivered. `CompositeEventPublisher` runs two idempotent steps, in order, for each outbox row: the in-process deactivation effect, which dedupes on event id, then the configured publisher. `hr-sync.publisher` is `logging` or `kafka`. A failure at either step retries through the existing backoff, `FAILED`, replay, and discard path. Ingest does not talk to Kafka. A broker outage only grows the outbox backlog.
+
+Within one employee's run the poller sends the next record only after the broker acknowledges the previous one, so a failure cannot let a later event overtake an earlier one. Different employees run in parallel on the publisher threads. That wait is the throughput trade-off: each event on an employee costs a round trip, and the other employees still publish at the same time.
 
 ```mermaid
 flowchart LR

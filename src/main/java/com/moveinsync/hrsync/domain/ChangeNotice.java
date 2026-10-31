@@ -9,7 +9,8 @@ public record ChangeNotice(
         String aggregateId,
         String eventType,
         List<String> changedFields,
-        Instant createdAt
+        Instant createdAt,
+        String correlationId
 ) {
     public ChangeNotice {
         changedFields = List.copyOf(changedFields);

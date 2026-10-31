@@ -55,6 +55,17 @@ hr-sync:
   ingest:
     max-batch-size: 1000
     max-body-bytes: 1048576
+  publisher: ${HR_SYNC_PUBLISHER:logging}
+  kafka:
+    bootstrap-servers: ${HR_SYNC_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    topic: ${HR_SYNC_KAFKA_TOPIC:hr-sync.employee-changes}
+    partitions: 6
+    replication-factor: 1
+    max-block: 1s
+    delivery-timeout: 3s
+    request-timeout: 1500ms
+    linger: 5ms
+    compression: lz4
   outbox:
     poll-interval: 1s
     batch-size: 400
