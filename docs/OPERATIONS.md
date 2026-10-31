@@ -69,7 +69,7 @@ Outbox thresholds are from the 2026-10-30 load on this machine (`VUS=8`, 60s, re
 
 | Signal | Suggested threshold |
 | --- | --- |
-| `outbox_pending` | Above 5,000 for 2 minutes. The 10s gauge peaked at 1,316 during the logging ingest. With the round publisher and Kafka up, the highest ingest sample was 1,680. A broker killed under that publisher left 69,035 pending and drained them in 20.9s with `outbox_failed` still 0 |
+| `outbox_pending` | Above 5,000 for 2 minutes. The 10s gauge peaked at 1,316 during the logging ingest. With the round publisher and Kafka up, on a fresh database, the highest ingest sample was 1,185. A broker killed under that publisher left 67,093 pending and drained them in 16.9s with `outbox_failed` still 0 |
 | `outbox_oldest_pending_seconds` | Above 30. Healthy samples stayed at 0. The stalled claim reached 196s in a 60s contention run. A killed process reached 75s while it was down, then the queue cleared |
 | `outbox_publish_rate_rows` | 0 for 1 minute while `outbox_pending` is above 0. Idle is pending 0, which is not this alert. The highest ingest sample was 4,046 rows/s |
 | `outbox_failed` | Above 0. Every load sample was 0. Do not use this for a Kafka outage: a broker failure leaves the row `PENDING` and does not increment attempts |

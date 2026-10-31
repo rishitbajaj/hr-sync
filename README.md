@@ -431,28 +431,28 @@ The poller blocks an employee when an earlier `FAILED` row is an `EMPLOYEE_DEACT
 
 ### Round publisher
 
-The image was rebuilt with one publisher thread, `linger.ms` 1, `batch.size` 65536, and lz4. A claimed batch sends one row per employee, waits for that round's acks, then sends the next row. The same machine and the same `VUS=8`, `WARMUP=10s`, `DURATION=60s`. The database was not reseeded. The before column is the sequential-ack Kafka minute above. `./load/run.sh ingest` and `./load/kafka-down-under-load.sh` wait up to 360s and print pending every 2s.
+The image was rebuilt with one publisher thread, `linger.ms` 1, `batch.size` 65536, and lz4. A claimed batch sends one row per employee, waits for that round's acks, then sends the next row. The same machine and the same `VUS=8`, `WARMUP=10s`, `DURATION=60s`, on a fresh database and a fresh topic (`docker compose down -v`, then `up`, then `python3 load/generate.py`). The before column is the sequential-ack Kafka minute above. `./load/run.sh ingest` and `./load/kafka-down-under-load.sh` wait up to 360s and print pending every 2s.
 
 | | Sequential acks | Rounds |
 | --- | --- | --- |
-| Steady req/s | 19.07 | 19.20 |
-| Events/s | 1,907 | 1,920 |
-| p50 | 419.8 ms | 412.3 ms |
-| p95 | 468.9 ms | 508.1 ms |
-| p99 | 1,063.7 ms | 1,152.6 ms |
-| Peak `outbox_pending` | 87,118 | 1,680 |
-| Highest `outbox.publish.rate` | 337.189 rows/s | 8,138.873 rows/s |
-| Drain to pending 0 | 330.3s | 0.429s |
+| Steady req/s | 19.07 | 18.77 |
+| Events/s | 1,907 | 1,877 |
+| p50 | 419.8 ms | 412.6 ms |
+| p95 | 468.9 ms | 474.8 ms |
+| p99 | 1,063.7 ms | 1,733.1 ms |
+| Peak `outbox_pending` | 87,118 | 1,185 |
+| Highest `outbox.publish.rate` | 337.189 rows/s | 6,104.793 rows/s |
+| Drain to pending 0 | 330.3s | 0.293s |
 
-The round minute classified 132,800 events: 99,920 applied, 12,960 stale, 13,280 duplicate, 6,640 rejected. The steady window was 1,152 requests. Error rate was 0. Peak pending is the highest 10s actuator sample. Failed rows stayed 0, and every outbox row was `PUBLISHED`. The backlog stayed in the low thousands, and the post-run drain was under a second. Ingest throughput did not move: the earlier limit was the database, and the publish path is no longer the one filling the queue.
+The round minute classified 131,000 events: 98,570 applied, 12,780 stale, 13,100 duplicate, 6,550 rejected. The steady window was 1,126 requests. Error rate was 0. Peak pending is the highest 10s actuator sample. Failed rows stayed 0, and every outbox row was `PUBLISHED`. The backlog stayed in the low thousands, and the post-run drain was under a second. Ingest throughput did not move: the earlier limit was the database, and the publish path is no longer the one filling the queue.
 
-Killing the broker during a second minute, same parameters: 20.00 req/s (2,000 events/s, p50 400.6 ms, p95 437.1 ms, p99 1,144.6 ms), 1,200 steady requests, error rate 0. `events_http_fail` was 0. 139,300 events were classified: 104,635 applied, 13,770 stale, 13,930 duplicate, 6,965 rejected. The database added 104,635 `processed_event` rows and 104,635 outbox rows. Version mismatches were 0. Version regressions were 0. Cross-tenant rows were 0. While the broker was down the outbox was 69,035 `PENDING`, 0 `FAILED`, and `PUBLISHED` was 538,545 (35,600 of this run had been acknowledged before the kill). After the broker was healthy, pending fell from 69,035 to 0 in 20.855s and failed stayed 0. That outage backlog is not in the low thousands, because nothing is published while the broker is down. It is the sustained drain, about 3,310 rows/s over those 21s, against about 310s for 96,291 rows before.
+Killing the broker during a second minute, same parameters, still on that fresh database: 21.07 req/s (2,107 events/s, p50 405.5 ms, p95 458.0 ms, p99 1,721.9 ms), 1,264 steady requests, error rate 0. `events_http_fail` was 0. 146,400 events were classified: 109,960 applied, 14,480 stale, 14,640 duplicate, 7,320 rejected. The database added 109,960 `processed_event` rows and 109,960 outbox rows. Version mismatches were 0. Version regressions were 0. Cross-tenant rows were 0. While the broker was down the outbox was 67,093 `PENDING`, 0 `FAILED`, and `PUBLISHED` was 341,997 (42,867 of this run had been acknowledged before the kill). After the broker was healthy, pending fell from 67,093 to 0 in 16.914s and failed stayed 0. That outage backlog is not in the low thousands, because nothing is published while the broker is down. It is the sustained drain, about 3,970 rows/s over those 17s, against about 310s for 96,291 rows before.
 
-Before this pair of minutes, the four `FAILED` updates from the sequential kill (ids 303196, 303201, 304336, 304344) were replayed so they would not block those employees. They were published after later events for the same employees were already on the topic, and their payloads have no `sourceVersion`. The demo consumer on `localhost:9094` then printed `read=407020 unique=407020 duplicates=0 orderViolations=4 malformed=0 stale=0`. The four order violations are those replayed ids. The two new minutes added 204,555 messages and no duplicates.
+The demo consumer on `localhost:9094` printed `read=208530 unique=208530 duplicates=0 orderViolations=0 malformed=0 stale=0`. That is the ingest minute's 98,570 messages plus this minute's 109,960. An earlier run of the same publisher, on a database that still held four `FAILED` updates from the sequential-ack kill, printed `orderViolations=4`. Those rows were replayed after later events for the same employees were already on the topic, and their payloads had no `sourceVersion`, so the consumer counted an order violation rather than a stale version. A `FAILED` row of any event type now blocks that employee's later events, so a replay cannot land after them. The fresh topic does not have that violation.
 
 ## Verification
 
-`mvn -B test` on 2026-10-31: 210 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2716 peakHeapBytes=87456424 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-31: 210 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2498 peakHeapBytes=87285112 maxHeapBytes=268435456`.
 
 ## Known limitations
 
