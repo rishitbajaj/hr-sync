@@ -283,7 +283,7 @@ A paused Postgres, with the app on port 8087 so the audit stack on 5432 and 8080
 
 ## Load
 
-k6 runs in the `grafana/k6` image (`k6 v2.3.0`). The stack is `load/docker-compose.yml` (project `hrsync-load`, host ports 5442 and 8092). One line, from the repo root, after the compose file is up and `python3 load/generate.py` has seeded:
+k6 runs in the `grafana/k6` image (`k6 v2.3.0`). The stack is `load/docker-compose.yml` (project `hrsync-load`, host ports 5442, 8092, and 9094). One line, from the repo root, after the compose file is up and `python3 load/generate.py` has seeded:
 
 ```bash
 docker run --rm --network hrsync-load --env-file load/.env -e SCENARIO=ingest -e BASE_URL=http://app:8080 -v "$PWD:/work" -w /work grafana/k6 run load/k6.js
@@ -394,9 +394,44 @@ Saved Prometheus scrapes for these runs were 33–46 KB and included `outbox_pub
 
 A rerun of that kill command after the invariant change exited 0. Of 110,600 events started, 41,500 came back classified (31,445 applied, 3,830 stale, 4,150 duplicate, 2,075 rejected) and 69,100 had no classifiable response (`events_unknown` 68,300, plus 800 from iterations k6 cut off before that counter moved). The database added 31,735 `processed_event` rows and 31,735 outbox rows, 290 more applies than the client was told about. Version regressions were 0. Cross-tenant rows were 0. The drain check found every outbox row `PUBLISHED` in 0.473s.
 
+### Kafka publisher
+
+`load/docker-compose.yml` starts a single-node KRaft broker, creates `hr-sync.employee-changes`, and sets the app to `hr-sync.publisher=kafka` with bootstrap `kafka:19092`. Host port 9094 is advertised as `localhost:9094`. The same machine and the same `VUS=8`, `WARMUP=10s`, `DURATION=60s` ingest minute, reseeded with `python3 load/generate.py`, measured on 2026-10-31. Error rate was 0. The before column is the logging publisher after the per-employee claim.
+
+| | Logging publisher | Kafka publisher |
+| --- | --- | --- |
+| Steady req/s | 15.87 | 19.07 |
+| Events/s | 1,587 | 1,907 |
+| p50 | 487.1 ms | 419.8 ms |
+| p95 | 658.0 ms | 468.9 ms |
+| p99 | 1,204.6 ms | 1,063.7 ms |
+| Peak `outbox_pending` | 1,316 | 87,118 |
+| Highest `outbox.publish.rate` | 4,046 rows/s | 337.189 rows/s |
+| Drain to pending 0 | 0.344s | 330.3s |
+
+The Kafka minute classified 132,800 events: 99,920 applied, 12,960 stale, 13,280 duplicate, 6,640 rejected. The steady window was 1,144 requests. Peak pending is the highest 10s actuator sample. The publish-rate gauge is the last tick's rows divided by that tick's wall time. By the last scrape of the minute the broker had acknowledged 12,802 messages, and the fastest scrape interval was 304 messages/s. `./load/run.sh ingest` used a 90s drain timeout and returned at 122.0s with 54,317 still pending and 0 failed. A follow-up count reached 0 at 330.3s from the start of that drain, and every outbox row was `PUBLISHED`. The demo consumer on `localhost:9094` printed `read=99920 unique=99920 duplicates=0 orderViolations=0 malformed=0`.
+
+Two publisher threads each wait for `acks=all` before the next event for that employee. The poller therefore moved a few hundred rows/s, and ingest kept the rest of the pool. The steady rate matches the earlier minute whose poller was stalled (19.07 req/s). The backlog is the cost of waiting for the broker. Ingest still returned 200.
+
+`load/run.sh` now waits up to 600s for the drain. The logging rows above were taken with `DRAIN_TIMEOUT=120`.
+
+### Kafka killed during ingest
+
+```bash
+DRAIN_TIMEOUT=720 ./load/kafka-down-under-load.sh
+```
+
+The script waits 25s, runs `docker kill hrsync-load-kafka`, lets k6 finish, prints the outbox, starts the broker, and checks invariants. The app process stayed up.
+
+Steady window, with the broker down for most of the minute: 19.38 req/s (1,938 events/s, p50 413.1 ms, p95 445.5 ms, p99 1,077.7 ms), 1,163 steady requests, error rate 0. `events_http_fail` was 0. 136,300 events were classified: 102,545 applied, 13,310 stale, 13,630 duplicate, 6,815 rejected. The database added 102,545 `processed_event` rows and 102,545 outbox rows. Version mismatches were 0. Version regressions were 0. Cross-tenant rows were 0. Every load employee still had a processed row.
+
+While the broker was down the outbox was 96,291 `PENDING`, 4 `FAILED`, and `PUBLISHED` had stopped at 306,730. 6,250 of this run's applies had been acknowledged before the kill. The four `FAILED` rows are `KafkaPublishException` at attempt 5. After the broker was healthy, pending fell from 96,291 to 0. The oldest-pending age went from 89.2s at 95,891 pending to 399.6s at 233 pending, and the next sample was pending 0, about 310s. The checker then sat until its 722.0s timeout because those four rows stayed `FAILED`, and the only failed check was `outbox did not end PUBLISHED`.
+
+The poller blocks an employee when an earlier `FAILED` row is an `EMPLOYEE_DEACTIVATED`. These four are updates, so the following events for those employees published once the broker was back. The topic after both Kafka minutes printed `read=202461 unique=202461 duplicates=0 orderViolations=0 malformed=0`: the first minute's 99,920 messages plus 102,541 delivered applies from this one. The four exhausted event ids are absent. Replaying them would append the earlier sequence after those later events.
+
 ## Verification
 
-`mvn -B test` on 2026-10-31: 203 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2599 peakHeapBytes=87361296 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-31: 203 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2567 peakHeapBytes=87182208 maxHeapBytes=268435456`.
 
 ## Known limitations
 
