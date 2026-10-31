@@ -67,5 +67,6 @@ docker exec hrsync-load-pg psql -U hrsync -d hrsync -c \
   "explain select id from employee where tenant_id = 'load-a' and employee_id = 'a-1-0' for update;" \
   >"$OUT/explain-employee.txt" || true
 
-python3 load/invariants.py check "$SCENARIO" --drain-timeout "${DRAIN_TIMEOUT:-600}"
+# Prints pending every 2s and returns when pending and failed are both 0.
+python3 load/invariants.py check "$SCENARIO" --drain-timeout "${DRAIN_TIMEOUT:-360}"
 exit "$K6_STATUS"

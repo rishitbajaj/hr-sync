@@ -37,6 +37,7 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
-# A Kafka ingest backlog takes a few minutes. Rows that exhaust max-attempts stay
-# FAILED, and the checker waits out this timeout while any FAILED row remains.
-python3 load/invariants.py check kafka-down --drain-timeout "${DRAIN_TIMEOUT:-600}"
+# Prints pending every 2s and returns when pending and failed are both 0.
+# A broker outage is transient, so it should not leave FAILED rows. A FAILED row
+# still waits out this timeout.
+python3 load/invariants.py check kafka-down --drain-timeout "${DRAIN_TIMEOUT:-360}"

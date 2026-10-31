@@ -162,7 +162,6 @@ def cross_tenant():
 
 def drain(timeout):
     started = time.time()
-    last = None
     last_pending = None
     pending_changed = time.time()
     while True:
@@ -187,17 +186,15 @@ def drain(timeout):
                 flush=True,
             )
             return round(time.time() - started, 3), age, current
-        if current != last:
-            print(
-                "draining pending="
-                + str(current["pending"])
-                + " failed="
-                + str(current["failed"])
-                + " oldestPendingSeconds="
-                + format(age, ".3f"),
-                flush=True,
-            )
-            last = current
+        print(
+            "draining pending="
+            + str(current["pending"])
+            + " failed="
+            + str(current["failed"])
+            + " oldestPendingSeconds="
+            + format(age, ".3f"),
+            flush=True,
+        )
         time.sleep(2)
 
 
