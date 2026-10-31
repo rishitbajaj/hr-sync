@@ -228,6 +228,77 @@ class OutboxPollerTest {
     }
 
     @Test
+    void shutdownDuringPublishCommitsTheRoundAndDoesNotClaimAgain() throws Exception {
+        for (int index = 0; index < 4; index++) {
+            assertThat(apply(create("emp-stop" + index, 1, "Stop " + index)).outcome()).isEqualTo(Outcome.APPLIED);
+        }
+        publisher.clear();
+        List<Long> storedIds = jdbc.queryForList(
+                "select id from outbox where aggregate_id like 'emp-stop%' and status = 'PENDING' order by id",
+                Long.class
+        );
+        assertThat(storedIds).hasSize(4);
+
+        Duration previous = settings.getShutdownTimeout();
+        settings.setShutdownTimeout(Duration.ofSeconds(5));
+        OutboxPoller stopping = newPoller();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        publisher.setListener(notice -> {
+            entered.countDown();
+            try {
+                if (!release.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("shutdown did not release the round");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted");
+            }
+        });
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<Integer> polling = pool.submit(() -> stopping.poll(10));
+            assertThat(entered.await(15, TimeUnit.SECONDS)).isTrue();
+            Future<?> stoppingCall = pool.submit(stopping::shutdown);
+            assertThat(stoppingCall.isDone()).isFalse();
+            Integer other = jdbc.queryForObject(
+                    """
+                            select count(*) from outbox
+                            where aggregate_id like 'emp-stop%'
+                              and status not in ('PENDING', 'PUBLISHED')
+                            """,
+                    Integer.class
+            );
+            assertThat(other).isZero();
+            release.countDown();
+            assertThat(polling.get(10, TimeUnit.SECONDS)).isPositive();
+            stoppingCall.get(10, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            settings.setShutdownTimeout(previous);
+            publisher.setListener(null);
+        }
+
+        assertThat(publisher.published().stream().map(ChangeNotice::eventId).toList()).doesNotHaveDuplicates();
+        assertThat(stopping.poll(10)).isZero();
+
+        OutboxPoller resume = newPoller();
+        int guard = 0;
+        while (unpublishedLike("emp-stop%") > 0) {
+            assertThat(resume.poll(10)).isPositive();
+            assertThat(++guard).isLessThan(10);
+        }
+        List<Long> publishedIds = publisher.published().stream().map(ChangeNotice::eventId).toList();
+        assertThat(publishedIds).doesNotHaveDuplicates();
+        assertThat(publishedIds).containsExactlyInAnyOrderElementsOf(storedIds);
+        assertThat(jdbc.queryForObject(
+                "select count(*) from outbox where aggregate_id like 'emp-stop%' and status <> 'PUBLISHED'",
+                Integer.class
+        )).isZero();
+    }
+
+    @Test
     void publishOrderFollowsPerEmployeeVersionOrder() {
         apply(create("emp-order", 1, "Ada"));
         apply(create("emp-other", 1, "Bea"));

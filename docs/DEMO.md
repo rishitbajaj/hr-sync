@@ -197,6 +197,58 @@ Post the same create. The token from step 1 is still valid.
  walk-kill   | ACTIVE |          1
 ```
 
+`docker compose kill` is SIGKILL. `docker stop` is SIGTERM. The app stops claiming new outbox rows, finishes the in-flight round, and Tomcat finishes in-flight HTTP. `server.shutdown` is `graceful`, `spring.lifecycle.timeout-per-shutdown-phase` and `hr-sync.outbox.shutdown-timeout` are 20s, and Compose `stop_grace_period` is 30s.
+
+On 2026-10-31 the load app (`load/docker-compose.yml`, port 8092) was stopped during ingest (`VUS=8`, `WARMUP=10s`, `DURATION=60s`). `docker stop hrsync-load-app` was issued 25s after k6 started and returned in about 5s. While the process was down the outbox was:
+
+```text
+  status   | count
+-----------+--------
+ PENDING   |  18120
+ PUBLISHED | 420690
+(2 rows)
+```
+
+There was no `FAILED` row. After `docker start`, `python3 load/invariants.py check sigterm --drain-timeout 360` printed:
+
+```text
+draining pending=16554 failed=0 oldestPendingSeconds=73.291
+draining pending=4154 failed=0 oldestPendingSeconds=63.976
+{
+  "scenario": "sigterm",
+  "outcomeSum": 39200,
+  "classified": 39200,
+  "attempted": 1554700,
+  "httpFail": 0,
+  "unknown": 1515500,
+  "other": 0,
+  "applied": 29720,
+  "stale": 3600,
+  "duplicate": 3920,
+  "rejected": 1960,
+  "processedDelta": 29720,
+  "outboxDelta": 29720,
+  "drainSeconds": 5.437,
+  "oldestPendingSecondsAfter": 0.0,
+  "pendingAfter": 0,
+  "failedAfter": 0,
+  "notPublishedAfter": 0,
+  "versionMismatches": 0,
+  "versionRegressions": 0,
+  "employeesWithoutProcessed": 0,
+  "crossTenantRows": 0,
+  "readLeaks": 0,
+  "coldExhausted": 0,
+  "allowUnacked": false,
+  "ok": false,
+  "failures": [
+    "events with an unknown outcome"
+  ]
+}
+```
+
+The 1,515,500 unknown events are the 15,155 requests that got HTTP status 0 after the process stopped accepting. Each batch is 100 events. The rows the client was told were applied match the database: `processedDelta` and `outboxDelta` are both 29,720. Pending fell from 16,554 to 0 in 5.437s and failed stayed 0. The same check with `--allow-unacked`, which is how the script treats a kill, printed `"ok": true` and `"failures": []`. That second check started from an empty queue, so its `drainSeconds` was 0.504.
+
 ## 10. Metrics
 
 ```bash

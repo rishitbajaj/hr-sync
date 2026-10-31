@@ -23,6 +23,8 @@ public class OutboxSettings {
 
     private Duration retryMaxDelay = Duration.ofSeconds(30);
 
+    private Duration shutdownTimeout = Duration.ofSeconds(20);
+
     public Duration getPollInterval() {
         return pollInterval;
     }
@@ -85,5 +87,13 @@ public class OutboxSettings {
 
     public void setRetryMaxDelay(Duration retryMaxDelay) {
         this.retryMaxDelay = retryMaxDelay;
+    }
+
+    public Duration getShutdownTimeout() {
+        return shutdownTimeout;
+    }
+
+    public void setShutdownTimeout(Duration shutdownTimeout) {
+        this.shutdownTimeout = shutdownTimeout;
     }
 }

@@ -32,6 +32,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Component
 public class OutboxPoller {
@@ -113,6 +115,8 @@ public class OutboxPoller {
     private final SyncMeters meters;
     private final PublishCircuit circuit;
     private final ExecutorService publishers;
+    private final AtomicBoolean accepting = new AtomicBoolean(true);
+    private final AtomicInteger inFlight = new AtomicInteger();
 
     public OutboxPoller(
             JdbcTemplate jdbc,
@@ -143,17 +147,41 @@ public class OutboxPoller {
     }
 
     @PreDestroy
-    void shutdown() {
+    public void shutdown() {
+        accepting.set(false);
+        long deadline = System.nanoTime() + Math.max(0, settings.getShutdownTimeout().toNanos());
+        while (inFlight.get() > 0 && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
         if (publishers != null) {
-            publishers.shutdownNow();
+            publishers.shutdown();
+            long remaining = deadline - System.nanoTime();
+            if (remaining > 0) {
+                try {
+                    if (!publishers.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                        publishers.shutdownNow();
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    publishers.shutdownNow();
+                }
+            }
         }
     }
 
     public int tick() {
+        if (!accepting.get()) {
+            return 0;
+        }
         long start = System.nanoTime();
         long budget = Math.max(0, settings.getTickBudget().toNanos());
         int delivered = 0;
-        while (true) {
+        while (accepting.get()) {
             Batch batch = claimAndPublish(settings.getBatchSize());
             delivered += batch.delivered;
             if (!batch.more || System.nanoTime() - start >= budget) {
@@ -183,6 +211,21 @@ public class OutboxPoller {
     }
 
     private Batch claimAndPublish(int batchSize) {
+        if (!accepting.get()) {
+            return new Batch(0, false);
+        }
+        inFlight.incrementAndGet();
+        try {
+            if (!accepting.get()) {
+                return new Batch(0, false);
+            }
+            return claimAndPublishHolding(batchSize);
+        } finally {
+            inFlight.decrementAndGet();
+        }
+    }
+
+    private Batch claimAndPublishHolding(int batchSize) {
         int limit = circuit.claimLimit(Math.max(1, batchSize));
         if (limit <= 0) {
             return new Batch(0, false);

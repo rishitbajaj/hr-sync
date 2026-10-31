@@ -1,6 +1,13 @@
 spring:
   application:
     name: hr-sync
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  task:
+    scheduling:
+      shutdown:
+        await-termination: true
+        await-termination-period: 20s
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/hrsync}
     username: ${SPRING_DATASOURCE_USERNAME:hrsync}
@@ -18,6 +25,7 @@ spring:
 
 server:
   port: 8080
+  shutdown: graceful
   error:
     include-message: never
     include-binding-errors: never
@@ -78,6 +86,7 @@ hr-sync:
     max-attempts: 5
     retry-base: 500ms
     retry-max-delay: 30s
+    shutdown-timeout: 20s
   auth:
     jwt-secret: ${HR_SYNC_JWT_SECRET:}
     token-ttl: 15m

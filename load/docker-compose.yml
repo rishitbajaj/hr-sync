@@ -101,6 +101,7 @@ services:
       HR_SYNC_KAFKA_TOPIC: hr-sync.employee-changes
     ports:
       - "8092:8080"
+    stop_grace_period: 30s
 
 volumes:
   hrsync-load-pg:
