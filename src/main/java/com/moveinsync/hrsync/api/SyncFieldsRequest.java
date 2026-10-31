@@ -1,14 +1,16 @@
 package com.moveinsync.hrsync.api;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 public record SyncFieldsRequest(
-        String name,
-        String email,
-        String phone,
-        String manager,
-        String officeCode,
-        String pickupPoint,
-        String specialAssistance,
-        String shift
+        @Schema(example = "Row One") String name,
+        @Schema(example = "row-one@example.com") String email,
+        @Schema(example = "+15555550100") String phone,
+        @Schema(example = "manager-1") String manager,
+        @Schema(example = "OFFICE-1") String officeCode,
+        @Schema(example = "point-1") String pickupPoint,
+        @Schema(example = "none") String specialAssistance,
+        @Schema(example = "DAY") String shift
 ) {
     @Override
     public String toString() {

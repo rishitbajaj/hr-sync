@@ -1,10 +1,12 @@
 package com.moveinsync.hrsync.api;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 public record SyncEventRequest(
-        String tenantId,
-        String employeeId,
-        Long sourceVersion,
-        String type,
+        @Schema(example = "tenant-a") String tenantId,
+        @Schema(example = "employee-1") String employeeId,
+        @Schema(example = "1") Long sourceVersion,
+        @Schema(example = "CREATE", allowableValues = {"CREATE", "UPDATE", "DEACTIVATE"}) String type,
         SyncFieldsRequest fields
 ) {
     @Override

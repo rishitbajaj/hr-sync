@@ -55,6 +55,10 @@ class HealthSmokeTest {
                 String.class
         );
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(restTemplate.getForEntity("/demo/openapi", String.class).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(restTemplate.getForEntity("/demo/swagger-ui", String.class).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     @Test

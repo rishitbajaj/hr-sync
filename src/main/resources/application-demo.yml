@@ -1,0 +1,9 @@
+springdoc:
+  api-docs:
+    enabled: true
+    path: /demo/openapi
+  swagger-ui:
+    enabled: true
+    path: /demo/swagger-ui
+    disable-swagger-default-url: true
+  packages-to-scan: com.moveinsync.hrsync.api

@@ -178,7 +178,7 @@ One app process, one Postgres, and one Kafka broker. Offices exist before an HR 
 | POST | `/outbox/{id}/replay?tenantId=` | operator | failed row back to pending |
 | POST | `/outbox/{id}/discard?tenantId=` | operator | body `{"reason":"..."}`, failed row only |
 | GET | `/actuator/prometheus` | operator | `Accept: text/plain` |
-| POST, GET | `/demo/**` | anyone, demo profile only | trips, bookings, failure injection |
+| POST, GET | `/demo/**` | anyone, demo profile only | trips, bookings, failure injection. `GET /demo/openapi` is the OpenAPI document and `GET /demo/swagger-ui` is the UI. Both are absent when the demo profile is off. A copy of the document is `docs/openapi.json` |
 
 A new reconciliation run marks every older `HALTED` run for that tenant `SUPERSEDED`. Approving that older run deactivates nobody. Approving the latest halted run still applies once. A halted run for another tenant stays `HALTED`.
 
@@ -456,7 +456,7 @@ The demo consumer on `localhost:9094` printed `read=208530 unique=208530 duplica
 
 ## Verification
 
-`mvn -B verify` on 2026-10-31, with `HR_SYNC_*`, `POSTGRES_*`, `SPRING_*`, and `COMPOSE_*` unset: 210 tests, 0 failures. Surefire time was 240.6s. Maven reported `Total time: 04:48 min`. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2385 peakHeapBytes=87370176 maxHeapBytes=268435456`.
+`mvn -B test` on 2026-10-31, with `HR_SYNC_*`, `POSTGRES_*`, `SPRING_*`, and `COMPOSE_*` unset: 222 tests, 0 failures. Surefire time was 306.7s. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2912 peakHeapBytes=93057032 maxHeapBytes=268435456`.
 
 ## Known limitations
 

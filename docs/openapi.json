@@ -1,0 +1,1361 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "hr-sync",
+    "description": "Roster sync. A bearer token is the `token` from POST /auth/token.\nIngest outcomes are APPLIED, REJECTED, IGNORED, and RETRYABLE_ERROR.\nRETRYABLE_ERROR is HTTP 503. The body is the per-record results plus correlationId, and Retry-After is set.\nGET /health, POST /auth/token, and /demo/** are open. Everything else needs the role named on the operation.\nGET /actuator/prometheus, GET /actuator/health, and GET /actuator/metrics are operator routes. Their bodies are the actuator formats, not this document's schemas.\n",
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:37789",
+      "description": "Generated server url"
+    }
+  ],
+  "paths": {
+    "/sync/transport-events": {
+      "post": {
+        "tags": [
+          "sync-event-controller"
+        ],
+        "summary": "Apply a transport batch",
+        "description": "Admin. Type must be UPDATE. Transport fields are pickupPoint and specialAssistance. HR fields in the body are ignored. Outcomes match POST /sync/events, including RETRYABLE_ERROR and the 503 body.",
+        "operationId": "transport",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "No record is RETRYABLE_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncBatchResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one record is RETRYABLE_ERROR / DATABASE_UNAVAILABLE or NOT_PROCESSED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncBatchResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin, or the body tenant does not match the token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/sync/events": {
+      "post": {
+        "tags": [
+          "sync-event-controller"
+        ],
+        "summary": "Apply an HR batch",
+        "description": "Admin. Outcomes are APPLIED, REJECTED, IGNORED, and RETRYABLE_ERROR. A RETRYABLE_ERROR record makes the status 503. The 503 body is results plus correlationId. Retry-After is set. DATABASE_UNAVAILABLE was not stored. NOT_PROCESSED was not attempted. Records already APPLIED in that body stay applied. reasonCode is omitted on APPLIED.",
+        "operationId": "sync",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "No record is RETRYABLE_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncBatchResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one record is RETRYABLE_ERROR.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncBatchResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin, or the body tenant does not match the token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/reconciliation/runs": {
+      "post": {
+        "tags": [
+          "reconciliation-controller"
+        ],
+        "summary": "Start a reconciliation",
+        "description": "Admin. Body is text/csv. A repeated employee id or a row for another tenant is 400 and writes nothing. A second RUNNING run for the tenant is 409 CONFLICT. A missing-ratio halt is 200 with status HALTED.",
+        "operationId": "start",
+        "parameters": [
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run was stored. Status is one of RUNNING, COMPLETED, HALTED, or FAILED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationRunResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The file was rejected.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A run is already RUNNING for this tenant.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/reconciliation/runs/{id}/approve": {
+      "post": {
+        "tags": [
+          "reconciliation-controller"
+        ],
+        "summary": "Approve a halted reconciliation",
+        "description": "Operator. Applies the halted deactivation set. A superseded halt is 409 SUPERSEDED and deactivates nobody.",
+        "operationId": "approve",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The halt was approved.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationRunResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an operator.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such run.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SUPERSEDED or the run is not HALTED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/outbox/{id}/replay": {
+      "post": {
+        "tags": [
+          "outbox-operator-controller"
+        ],
+        "summary": "Replay a failed outbox row",
+        "description": "Operator. The row goes back to PENDING with attempts 0. Only a FAILED row can be replayed.",
+        "operationId": "replay",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The row is pending again."
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an operator.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such outbox id.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The row is not FAILED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/outbox/{id}/discard": {
+      "post": {
+        "tags": [
+          "outbox-operator-controller"
+        ],
+        "summary": "Discard a failed outbox row",
+        "description": "Operator. Body is {\"reason\":\"...\"}. Only a FAILED row can be discarded. Later events for that employee can publish after the discard.",
+        "operationId": "discard",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscardRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The row is discarded."
+          },
+          "400": {
+            "description": "The reason is missing.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an operator.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such outbox id.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The row is not FAILED.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/demo/trips": {
+      "post": {
+        "tags": [
+          "demo-booking-controller"
+        ],
+        "summary": "Seed a demo trip",
+        "description": "Open. Demo profile only.",
+        "operationId": "seedTrip",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TripSeed"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The trip.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/TripView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid seed.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/demo/failures": {
+      "post": {
+        "tags": [
+          "demo-booking-controller"
+        ],
+        "summary": "Arm demo booking failures",
+        "description": "Open. Demo profile only. The next cancel calls fail, time out, or lose the response the given number of times.",
+        "operationId": "failures",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FailureInjection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The armed counts.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/FailureInjection"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/demo/bookings": {
+      "get": {
+        "tags": [
+          "demo-booking-controller"
+        ],
+        "summary": "Read the demo board",
+        "description": "Open. Demo profile only.",
+        "operationId": "inspect",
+        "responses": {
+          "200": {
+            "description": "Trips and bookings.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/Board"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "demo-booking-controller"
+        ],
+        "summary": "Seed a demo booking",
+        "description": "Open. Demo profile only. The body has no name, email, or phone.",
+        "operationId": "seedBooking",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingSeed"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The booking.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid seed.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/token": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "summary": "Issue a token",
+        "description": "Open. A bad password is 401 UNAUTHORIZED. The token lasts token-ttl, 15 minutes by default.",
+        "operationId": "token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "token and expiresInSeconds.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid username or password.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reconciliation/runs/{id}": {
+      "get": {
+        "tags": [
+          "reconciliation-controller"
+        ],
+        "summary": "Read a reconciliation run",
+        "description": "Admin or operator.",
+        "operationId": "get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationRunResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin or operator.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such run.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/outbox/failed": {
+      "get": {
+        "tags": [
+          "outbox-operator-controller"
+        ],
+        "summary": "List failed outbox rows",
+        "description": "Operator. Each row is employeeId, eventId, attempts, and reasonCode.",
+        "operationId": "failed",
+        "parameters": [
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Failed rows for the tenant. Empty when there are none.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FailedOutboxRow"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an operator.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "health-controller"
+        ],
+        "summary": "Liveness",
+        "description": "Open. No token. Body is status UP when the process is up.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "The process is up.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/employees/{id}": {
+      "get": {
+        "tags": [
+          "employee-controller"
+        ],
+        "summary": "Read one employee",
+        "description": "Employee (self only), admin, or operator. An operator or admin passes tenantId when the token has no tenant. Placeholders are not returned. The body is tenantId, employeeId, status, officeCode, and shift.",
+        "operationId": "get_1",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The visible employee.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmployeeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The tenant does not match the token.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown id, another employee's id, or a placeholder.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SyncBatchRequest": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncEventRequest"
+            }
+          }
+        }
+      },
+      "SyncEventRequest": {
+        "type": "object",
+        "properties": {
+          "tenantId": {
+            "type": "string",
+            "example": "tenant-a"
+          },
+          "employeeId": {
+            "type": "string",
+            "example": "employee-1"
+          },
+          "sourceVersion": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "CREATE",
+              "UPDATE",
+              "DEACTIVATE"
+            ],
+            "example": "CREATE"
+          },
+          "fields": {
+            "$ref": "#/components/schemas/SyncFieldsRequest"
+          }
+        }
+      },
+      "SyncFieldsRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Row One"
+          },
+          "email": {
+            "type": "string",
+            "example": "row-one@example.com"
+          },
+          "phone": {
+            "type": "string",
+            "example": "+15555550100"
+          },
+          "manager": {
+            "type": "string",
+            "example": "manager-1"
+          },
+          "officeCode": {
+            "type": "string",
+            "example": "OFFICE-1"
+          },
+          "pickupPoint": {
+            "type": "string",
+            "example": "point-1"
+          },
+          "specialAssistance": {
+            "type": "string",
+            "example": "none"
+          },
+          "shift": {
+            "type": "string",
+            "example": "DAY"
+          }
+        }
+      },
+      "SyncBatchResponse": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncRecordResponse"
+            }
+          },
+          "correlationId": {
+            "type": "string"
+          }
+        }
+      },
+      "SyncRecordResponse": {
+        "type": "object",
+        "properties": {
+          "tenantId": {
+            "type": "string",
+            "example": "tenant-a"
+          },
+          "employeeId": {
+            "type": "string",
+            "example": "employee-1"
+          },
+          "sourceVersion": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1
+          },
+          "outcome": {
+            "type": "string",
+            "description": "APPLIED stores the change. REJECTED is a validation or constraint failure. IGNORED is DUPLICATE or STALE_IGNORED. RETRYABLE_ERROR is DATABASE_UNAVAILABLE or NOT_PROCESSED and the HTTP status is 503.",
+            "enum": [
+              "APPLIED",
+              "REJECTED",
+              "IGNORED",
+              "RETRYABLE_ERROR"
+            ]
+          },
+          "reasonCode": {
+            "type": "string",
+            "description": "Omitted when outcome is APPLIED.",
+            "enum": [
+              "MISSING_REQUIRED_FIELD",
+              "INVALID_PHONE",
+              "INVALID_EMAIL",
+              "INVALID_SHIFT",
+              "UNKNOWN_OFFICE",
+              "DUPLICATE",
+              "STALE_IGNORED",
+              "APPLY_FAILED",
+              "DATABASE_UNAVAILABLE",
+              "NOT_PROCESSED"
+            ]
+          }
+        }
+      },
+      "ApiError": {
+        "type": "object",
+        "description": "Error body. correlationId is present when the request had one.",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "UNAUTHORIZED"
+          },
+          "message": {
+            "type": "string",
+            "example": "Authentication required"
+          },
+          "correlationId": {
+            "type": "string",
+            "example": "req-1"
+          }
+        }
+      },
+      "ReconciliationRunResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenantId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "unchanged": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "toCreate": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "toUpdate": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "toDeactivate": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "missingCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "activeCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "exportRowCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "missingRatio": {
+            "type": "number",
+            "format": "double"
+          },
+          "threshold": {
+            "type": "number",
+            "format": "double"
+          },
+          "haltReason": {
+            "type": "string"
+          },
+          "rejected": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "rejectedByReason": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "rejections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rejection"
+            }
+          }
+        }
+      },
+      "Rejection": {
+        "type": "object",
+        "properties": {
+          "employeeId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "DiscardRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "example": "duplicate delivery"
+          }
+        }
+      },
+      "TripSeed": {
+        "type": "object",
+        "properties": {
+          "tenantId": {
+            "type": "string",
+            "example": "tenant-a"
+          },
+          "tripId": {
+            "type": "string",
+            "example": "trip-1"
+          },
+          "capacity": {
+            "type": "integer",
+            "format": "int32",
+            "example": 4
+          }
+        }
+      },
+      "TripView": {
+        "type": "object",
+        "properties": {
+          "tenantId": {
+            "type": "string"
+          },
+          "tripId": {
+            "type": "string"
+          },
+          "capacity": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "occupied": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "FailureInjection": {
+        "type": "object",
+        "properties": {
+          "failures": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "timeouts": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "lostResponses": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "BookingSeed": {
+        "type": "object",
+        "properties": {
+          "bookingId": {
+            "type": "string",
+            "example": "booking-1"
+          },
+          "tenantId": {
+            "type": "string",
+            "example": "tenant-a"
+          },
+          "employeeId": {
+            "type": "string",
+            "example": "employee-1"
+          },
+          "tripId": {
+            "type": "string",
+            "example": "trip-1"
+          },
+          "startsAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-12-01T09:00:00Z"
+          }
+        }
+      },
+      "BookingView": {
+        "type": "object",
+        "properties": {
+          "bookingId": {
+            "type": "string"
+          },
+          "tenantId": {
+            "type": "string"
+          },
+          "employeeId": {
+            "type": "string"
+          },
+          "tripId": {
+            "type": "string"
+          },
+          "startsAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cancelled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TokenRequest": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "example": "admin-1",
+            "maxLength": 128,
+            "minLength": 0
+          },
+          "password": {
+            "type": "string",
+            "example": "password-1",
+            "maxLength": 128,
+            "minLength": 0
+          }
+        }
+      },
+      "TokenResponse": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "expiresInSeconds": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "FailedOutboxRow": {
+        "type": "object",
+        "properties": {
+          "employeeId": {
+            "type": "string"
+          },
+          "eventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "attempts": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reasonCode": {
+            "type": "string"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "EmployeeResponse": {
+        "type": "object",
+        "properties": {
+          "tenantId": {
+            "type": "string",
+            "example": "tenant-a"
+          },
+          "employeeId": {
+            "type": "string",
+            "example": "employee-1"
+          },
+          "status": {
+            "type": "string",
+            "example": "ACTIVE"
+          },
+          "officeCode": {
+            "type": "string",
+            "example": "OFFICE-1"
+          },
+          "shift": {
+            "type": "string",
+            "example": "DAY"
+          }
+        }
+      },
+      "Board": {
+        "type": "object",
+        "properties": {
+          "trips": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TripView"
+            }
+          },
+          "bookings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookingView"
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "description": "HS256 JWT from POST /auth/token",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  }
+}
