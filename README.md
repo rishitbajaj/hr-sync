@@ -1,5 +1,7 @@
 # hr-sync
 
+[![CI](https://github.com/rishitbajaj/hr-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/rishitbajaj/hr-sync/actions/workflows/ci.yml)
+
 HR roster sync: idempotent, out-of-order, self-healing employee records. Postgres holds the roster, the idempotency rows, and the outbox. The design is in `docs/DESIGN.md`.
 
 ## Run
@@ -205,6 +207,8 @@ mvn -B test
 ```
 
 That runs the tests and then the reconciliation benchmark in a forked JVM with `-Xmx256m`. The benchmark is `ReconciliationBenchmarkTest`. It is excluded from the default Surefire execution and included again as execution `reconciliation-benchmark`.
+
+GitHub Actions runs `mvn -B verify` on every push and pull request with Temurin 21 and a Maven cache. The runner's Docker is what Testcontainers uses. Surefire reports are uploaded as the `surefire-reports` artifact. The workflow sets dummy `HR_SYNC_JWT_SECRET` and database password values. It does not read a local `.env`.
 
 Load tests use `load/docker-compose.yml` (ports 5442 and 8092) and are described in `load/README.md`.
 
@@ -452,7 +456,7 @@ The demo consumer on `localhost:9094` printed `read=208530 unique=208530 duplica
 
 ## Verification
 
-`mvn -B test` on 2026-10-31: 210 tests, 0 failures. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2498 peakHeapBytes=87285112 maxHeapBytes=268435456`.
+`mvn -B verify` on 2026-10-31, with `HR_SYNC_*`, `POSTGRES_*`, `SPRING_*`, and `COMPOSE_*` unset: 210 tests, 0 failures. Surefire time was 240.6s. Maven reported `Total time: 04:48 min`. That count includes `ReconciliationBenchmarkTest`, which printed `reconciliation benchmark rows=200000 elapsedMs=2385 peakHeapBytes=87370176 maxHeapBytes=268435456`.
 
 ## Known limitations
 

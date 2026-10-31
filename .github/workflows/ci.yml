@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Verify
+        env:
+          # Dummy values. The suite uses Testcontainers and src/test/resources/application.yml.
+          # Do not set bootstrap users here: an exported bootstrap value would seed every context.
+          HR_SYNC_JWT_SECRET: 0123456789abcdef0123456789abcdef
+          POSTGRES_PASSWORD: ci-dummy-password
+          SPRING_DATASOURCE_PASSWORD: ci-dummy-password
+        run: mvn -B verify
+
+      - name: Upload Surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          if-no-files-found: warn
